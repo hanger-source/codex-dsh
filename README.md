@@ -72,7 +72,7 @@ DSH 连接凭据在运行时从本机启动信息取得，仅用于本机连接�
 
 ## 可组合的会话能力
 
-子树、状态与队列、任务板、用量和历史查询可单独使用，也可导入 JavaScript 自由组合；`status` 是其中一种组合视图。已有子 Agent 可通过原生投递接口获得局部指导，继续向原主控交付，跨模块分工由主控统筹。
+以 `scripts/sdk.mjs` 为主入口，连接、绑定读取、子树、状态与队列、任务板、历史查询以及消息投递都能直接用 JavaScript 组合。批量数据在程序内筛选、关联，只将影响判断的信息送入 Codex 上下文，减少 Codex 的重复阅读和工具往返。已有子 Agent 可通过原生投递接口获得局部指导，继续向原主控交付，跨模块分工由主控统筹。
 
 ```sh
 D="$HOME/.agents/skills/codex-dsh/scripts/dsh.mjs"
@@ -82,7 +82,7 @@ node "$D" tasks --session ROOT_ID
 node "$D" activity --session ROOT_ID --agent investigator --max-messages 3
 ```
 
-`scripts/session.mjs` 的函数接受已连接的 `DshClient`，复用连接，不依赖本机绑定，不建立第二份任务状态。使用者按需组织查询与消息，详见 [函数、CLI、历史分页与投递边界](skills/codex-dsh/references/session-tools.md)。
+CLI 是可选的薄入口；SDK 导入时没有副作用，不需要调用 CLI，也不建立第二份任务状态。使用者按需组织查询与消息，详见 [SDK、示例与投递边界](skills/codex-dsh/references/session-tools.md)。
 
 ## 可组合的工程观察
 
@@ -104,7 +104,8 @@ skills/codex-dsh/
 ├── SKILL.md                    # 使用与协作规则
 ├── agents/openai.yaml          # Codex Skill 元数据
 ├── scripts/
-│   ├── dsh.mjs                 # 原生会话操作与双向投递
+│   ├── sdk.mjs                 # 公开 SDK 入口、连接、绑定读取与 Codex 投递
+│   ├── dsh.mjs                 # 可选 CLI 封装
 │   ├── session.mjs             # 独立会话查询、子树发现与子 Agent 投递
 │   ├── project.mjs             # 可独立组合的工程观察与展示函数
 │   └── typescript-outline.mjs  # TypeScript 原生语法提取

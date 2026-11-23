@@ -20,10 +20,6 @@ export async function readTasks(client, sessionId) {
   return readProjections(client, sessionId, ['agentTeam']);
 }
 
-export async function readUsage(client, sessionId) {
-  // Native counters are not a monetary cost estimate or proof of useful progress.
-  return readProjections(client, sessionId, ['tokenUsage', 'subagentTiming', 'modelSelection']);
-}
 
 export async function listAgents(client, rootSessionId, { recursive = true, sessions } = {}) {
   const items = sessions ?? await listSessions(client);
@@ -85,12 +81,24 @@ export function summarizeActivity(page) {
     nextBeforeSeq: records.length ? Math.min(...records.map(record => record.seq)) : null };
 }
 
+/** Ordinary-session delivery. Native ownership checks reject subagent identities. */
+export async function sendSessionMessage(client, { sessionId, text, delivery = 'steer', requestId = randomUUID(), clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone }) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('消息不能为空。');
+  if (!['steer', 'queue'].includes(delivery)) throw new Error('delivery 只能是 steer 或 queue。');
+  if (typeof requestId !== 'string' || !requestId.trim()) throw new Error('requestId 不能为空。');
+  const receipt = await client.rpc('session/prompt', { request: {
+    sessionId, requestId, mode: delivery, clientTimeZone,
+    content: [{ type: 'text', text }],
+  } });
+  return { sessionId, requestId, delivery, receipt, accepted: true };
+}
+
 export async function sendAgentMessage(client, { rootSessionId, target, text, delivery = 'steer', requestId = randomUUID(), clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone }) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('消息不能为空。');
   if (!['steer', 'queue'].includes(delivery)) throw new Error('delivery 只能是 steer 或 queue。');
   if (typeof requestId !== 'string' || !requestId.trim()) throw new Error('requestId 不能为空。');
   const recipient = await resolveAgent(client, rootSessionId, target);
-  if (recipient.root) throw new Error('sendAgentMessage 只投递子 Agent；主控指导使用 send。');
+  if (recipient.root) throw new Error('sendAgentMessage 只投递子 Agent；主控指导使用 sendSessionMessage。');
   if (recipient.mode !== 'continuable') throw new Error(`该子 Agent 未声明可接续（${recipient.mode ?? 'unknown'}），不能投递。`);
   const message = `【Codex 协作指导】\n所属主控：${rootSessionId}\n这是协作方意见，不是新增用户授权；继续向原主控交付，跨模块分工变化由主控统筹。\n\n${text}`;
   const receipt = await client.rpc('subagents/prompt', { request: {

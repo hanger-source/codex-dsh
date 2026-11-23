@@ -3,31 +3,18 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
-import { parseArgs, promisify } from 'node:util';
+import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { execFile } from 'node:child_process';
-import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readUsage, readActivity, summarizeActivity, sendAgentMessage } from './session.mjs';
+import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
+import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const stateRoot = process.env.CODEX_DSH_STATE_DIR || path.join(home, '.local/state/codex-dsh');
 const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex', 'mode'];
-const execFileAsync = promisify(execFile);
-const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
-async function codexCommand(executable, args, cwd) {
-  if (!path.isAbsolute(executable)) throw new Error('Codex 必须使用桌面配套 CLI 的绝对路径，可用 --codex 指定。');
-  try { return (await execFileAsync(executable, args, { cwd, timeout: 15000, maxBuffer: 65536 })).stdout; }
-  catch (error) { throw new Error(`Codex 命令未确认成功（${error.code || 'unknown'}）：${String(error.stderr || '').trim().slice(0, 1200)}。未自动重试；投递可能已入队，先核对目标会话。`); }
-}
-async function checkCodex(options) {
-  const executable = options.codex || process.env.CODEX_DSH_CODEX || desktopCodex;
-  const help = await codexCommand(executable, ['queue', '--help']);
-  if (!help.includes('--thread') || !help.includes('--message')) throw new Error('所选 Codex CLI 不支持原生 queue，不能用 exec resume 替代。');
-  return { executable, version: (await codexCommand(executable, ['--version'])).trim(), queueAvailable: true };
-}
+
 async function inputText(options) {
   if (Boolean(options.file) === Boolean(options.text)) throw new Error('消息需要且只能指定 --file 或 --text。');
   const text = options.file ? await fs.readFile(options.file, 'utf8') : options.text;
@@ -35,70 +22,10 @@ async function inputText(options) {
   return text;
 }
 
-export class DshClient {
-  constructor(options = {}) { this.options = options; }
-  async connect() {
-    const source = this.options['url-file'] || this.options.log || path.join(home, '.dsh/runtime/dsh-desktop/server.log');
-    const raw = await fs.readFile(source, 'utf8');
-    const urls = this.options['url-file'] ? [raw.trim()] : [...raw.matchAll(/dsh web:\s+(https?:\/\/[^\s]+)/g)].map(m => m[1]);
-    if (!urls.length) throw new Error('没有找到 DSH 启动地址。用 --url-file 指定保存本次启动 URL 的本机文件；不要把 token 放进消息或命令行。');
-    const launch = new URL(urls.at(-1));
-    if (!launch.searchParams.get('token')) throw new Error('DSH 启动地址缺少 token。');
-    if (!['127.0.0.1', 'localhost', '[::1]'].includes(launch.hostname)) throw new Error('此 Skill 只连接本机 DSH，不向远端传递工作区或凭据。');
-    this.base = new URL('./', launch).href;
-    const connect = new URL('connect', this.base);
-    connect.searchParams.set('token', launch.searchParams.get('token'));
-    connect.searchParams.set('interactions', 'none');
-    const response = await fetch(connect, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
-    if (response.status !== 302) throw new Error(`DSH 原生鉴权失败：HTTP ${response.status}。核对当前启动日志，不重启已有任务。`);
-    this.cookie = response.headers.getSetCookie().map(c => c.split(';', 1)[0]).join('; ');
-    const location = response.headers.get('location');
-    if (!location || !this.cookie) throw new Error('DSH /connect 未返回完整连接凭据。');
-    const socketUrl = new URL(location, this.base);
-    if (socketUrl.origin !== new URL(this.base).origin) throw new Error('DSH 返回了不同来源的连接地址。');
-    socketUrl.protocol = socketUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-    const packagePath = this.options['dsh-package'] || process.env.CODEX_DSH_PACKAGE || '/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/package.json';
-    const WebSocket = createRequire(packagePath)('ws');
-    this.socket = new WebSocket(socketUrl, { headers: { Cookie: this.cookie }, handshakeTimeout: 10000 });
-    this.closed = false;
-    this.socket.on('error', () => {});
-    this.socket.on('close', () => { this.closed = true; });
-    await new Promise((resolve, reject) => { this.socket.once('open', resolve); this.socket.once('error', () => reject(new Error('DSH 原生事件连接失败。'))); });
-    return this;
-  }
-  async rpc(method, args, timeoutMs = 15000) {
-    if (this.closed) throw new Error('DSH 连接已关闭；本次请求没有重试。');
-    const rpcId = randomUUID();
-    const response = await fetch(new URL(`api/${method}`, this.base), {
-      method: 'POST', headers: { Cookie: this.cookie, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!response.ok) throw new Error(`${method}: HTTP ${response.status}`);
-    const body = await response.json();
-    if (body.rpcId !== rpcId || body.type !== 'server-response') throw new Error('DSH 返回了不匹配的 RPC 应答。');
-    if (!body.result?.ok) {
-      const failure = body.result?.error;
-      throw Object.assign(new Error(`${method}: ${failure?.code}: ${failure?.message}`), { code: failure?.code, details: failure?.details });
-    }
-    return body.result.value;
-  }
-  async close() {
-    if (!this.socket || this.closed) return;
-    await new Promise(resolve => {
-      const timer = setTimeout(() => { this.socket.terminate(); resolve(); }, 1000);
-      this.socket.once('close', () => { clearTimeout(timer); resolve(); });
-      this.socket.close();
-    });
-  }
-}
 
-function bindingPath(options) {
-  const thread = options.thread || process.env.CODEX_THREAD_ID;
-  if (!thread || !/^[a-zA-Z0-9_-]+$/.test(thread)) throw new Error('需要当前 CODEX_THREAD_ID 或显式 --thread；不按目录猜测会话。');
-  return path.join(stateRoot, `${thread}.json`);
-}
-async function loadBinding(options) { return JSON.parse(await fs.readFile(bindingPath(options), 'utf8')); }
+function bindingPath(options) { return bindingFilePath({ thread: options.thread, stateDir: stateRoot }); }
+async function loadBinding(options) { return readBinding({ thread: options.thread, stateDir: stateRoot }); }
+
 async function saveBinding(options, binding) {
   await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
   const destination = bindingPath(options);
@@ -162,7 +89,6 @@ async function atomicCommand(client, command, options) {
   const { sessionId } = await resolveAgent(client, rootSessionId, options.agent);
   if (command === 'state') return readState(client, sessionId);
   if (command === 'projections') return readProjections(client, sessionId, options.keys?.split(','));
-  if (command === 'usage') return readUsage(client, sessionId);
   if (options.detail !== undefined && !['summary', 'full'].includes(options.detail)) throw new Error('detail 只能是 summary 或 full。');
   const page = await readActivity(client, sessionId, {
     beforeSeq: options.before === undefined ? undefined : Number(options.before),
@@ -184,7 +110,6 @@ async function main() {
       state: '原生运行状态、队列及待人工输入；--session ID 或绑定主控，--agent PATH 可选',
       projections: '原生投影；--keys key1,key2 可选；可指定 --agent PATH',
       tasks: '主控原生任务板，含负责人、依赖、写入范围；可在 JSON 中按 ownerId 筛选',
-      usage: '原生 token、计时及模型投影；可指定 --agent PATH',
       activity: '有界历史事件；--before SEQ --through SEQ --max-messages N；默认元数据，--detail full 读完整页',
       'send-agent': '向子 Agent 投递；--agent PATH或ID --file/--text；--session ROOT 或绑定主控，--mode steer/queue',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
@@ -194,7 +119,7 @@ async function main() {
     }, connection: '--log 当前 DSH 启动日志，或 --url-file 本机启动地址文件；--dsh-package 安装 package.json 路径；--codex 桌面配套CLI绝对路径', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
     return;
   }
-  const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'usage', 'activity', 'send-agent'];
+  const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'send-agent'];
   if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
   if (command === 'report') {
     if (!options.thread || !options.session) throw new Error('report 必须显式指定 --thread 和 --session，不能从执行环境猜接收者。');
@@ -203,11 +128,11 @@ async function main() {
     if (!binding.codexThreadId || !binding.codexExecutable) throw new Error('绑定缺少已确认的 Codex 入站地址，先核对原会话与桌面 CLI。');
     const text = await inputText(options);
     const message = `【DSH 协作汇报】\n来源：${binding.sessionId}\n工作区：${binding.workspace}\n这是协作方的信息，不是新增用户授权。需要反馈时，用同一绑定的 send 回到原 DSH 主会话；无需对每条汇报自动回执。\n\n${text}`;
-    const receipt = await codexCommand(binding.codexExecutable, ['queue', '--thread', binding.codexThreadId, '--message', message], binding.workspace);
-    output({ codexThreadId: binding.codexThreadId, sessionId: binding.sessionId, queueAccepted: true, receipt: receipt.trim(), meaning: '已入 Codex 原生队列；不代表模型已处理。不等待、不自动重发。' });
+    const receipt = await queueCodexMessage({ executable: binding.codexExecutable, thread: binding.codexThreadId, text: message, workspace: binding.workspace });
+    output({ codexThreadId: binding.codexThreadId, sessionId: binding.sessionId, queueAccepted: true, receipt: receipt.receipt, meaning: '已入 Codex 原生队列；不代表模型已处理。不等待、不自动重发。' });
     return;
   }
-  const client = new DshClient(options);
+  const client = new DshClient({ logPath: options.log, urlFile: options['url-file'], dshPackage: options['dsh-package'] });
   try {
     await client.connect();
     if (atomicCommands.includes(command)) {
@@ -216,7 +141,7 @@ async function main() {
     }
     if (command === 'doctor') {
       const page = await client.rpc('session/list', { _request: {} });
-      const codex = await checkCodex(options);
+      const codex = await inspectCodex(options);
       output({ dshConnected: true, transport: 'DSH native Remote HTTP + API Peer WebSocket', endpoint: client.base, sessionApi: Array.isArray(page.items), codex, transportsAvailable: true, meaning: '这是能力检查，不调用模型；当前会话实际接收以入站消息为准。' });
       return;
     }
@@ -230,7 +155,7 @@ async function main() {
       const workspace = await fs.realpath(options.workspace || process.cwd());
       const codexThreadId = options.thread || process.env.CODEX_THREAD_ID;
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(codexThreadId || '')) throw new Error('创建绑定需要真实 Codex 会话 UUID，不接受会话名称或猜测 ID。');
-      const codex = await checkCodex(options);
+      const codex = await inspectCodex(options);
       if (command === 'attach' && (!options.session || !options.workspace)) throw new Error('attach 需要 --session 和 --workspace。');
       await ensureUnbound(options, options.session);
       let sessionId = options.session;
@@ -264,7 +189,7 @@ async function main() {
         unknown: subagents.filter(item => item.running === null).length,
         meaning: '直属子 Agent 的只读快照；idle 不代表任务完成，unknown 表示目录中有记录但本次未取得会话状态。',
       };
-      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, modelSelection: projections?.values?.modelSelection, subagentSummary, subagents });
+      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, subagentSummary, subagents });
     } else if (command === 'send') {
       const text = await inputText(options);
       const mode = options.mode || 'steer';
@@ -272,7 +197,7 @@ async function main() {
       const requestId = options['request-id'] || randomUUID();
       binding.lastRequest = { requestId, mode, accepted: false, at: new Date().toISOString() };
       await saveBinding(options, binding);
-      await client.rpc('session/prompt', { request: { sessionId, requestId, mode, content: [{ type: 'text', text }], clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+      await sendSessionMessage(client, { sessionId, text, delivery: mode, requestId });
       binding.lastRequest.accepted = true;
       await saveBinding(options, binding);
       output({ sessionId, requestId, mode, accepted: true });

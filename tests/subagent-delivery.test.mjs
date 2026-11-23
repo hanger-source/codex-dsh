@@ -1,8 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { DshClient } from '../skills/codex-dsh/scripts/dsh.mjs';
-import { sendAgentMessage } from '../skills/codex-dsh/scripts/session.mjs';
+import { DshClient, sendAgentMessage, sendSessionMessage } from '../skills/codex-dsh/scripts/sdk.mjs';
 
 // Only the native HTTP boundary is substituted; no live model receives messages.
 async function withGateway(run) {
@@ -19,6 +18,9 @@ async function withGateway(run) {
         { sessionId: 'finished', parentSessionId: 'root', origin: 'subagent', running: false },
         { sessionId: 'stranger', parentSessionId: 'other', origin: 'subagent' },
       ] } };
+    } else if (body.method === 'session/prompt') {
+      deliveries.push(body.payload.args.request);
+      result = { ok: true, value: { accepted: true } };
     } else if (body.method === 'subagents/prompt') {
       deliveries.push(body.payload.args.request);
       result = deliveries.at(-1).requestId === 'capacity-reject'
@@ -63,5 +65,16 @@ test('a native capacity refusal is exposed without retrying or switching routes'
   await withGateway(async (client, deliveries) => {
     await assert.rejects(sendAgentMessage(client, { rootSessionId: 'root', target: 'reader', text: 'inspect the result', requestId: 'capacity-reject' }), /subagent\/delivery-unavailable/);
     assert.equal(deliveries.length, 1);
+  });
+});
+
+test('the SDK delivers ordinary-session guidance without requiring a CLI or binding', async () => {
+  await withGateway(async (client, deliveries) => {
+    const receipt = await sendSessionMessage(client, { sessionId: 'root', text: 'inspect the source before changing scope', delivery: 'steer', requestId: 'root-guidance' });
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].sessionId, 'root');
+    assert.equal(deliveries[0].mode, 'steer');
+    assert.equal(receipt.requestId, 'root-guidance');
+    assert.equal(receipt.receipt.accepted, true);
   });
 });
