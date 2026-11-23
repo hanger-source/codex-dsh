@@ -34,6 +34,7 @@ Codex 侧默认绑定当前 `CODEX_THREAD_ID`，创建绑定必须是实际 UUID
 
 - 原生方法：`session/list`、`create`、`rename`、`projections`、`state`、`prompt`、`wait`，以及 `agentTeams/setEnabled`。
 - `session/list` 当前返回全部摘要；`_request` 是该方法实际声明的参数名。其它 Session 方法使用 `request`。不根据相近名称自动尝试不同协议。
+- `status` 将主控的 `subagentCatalog` 与 `session/list` 的直属子会话合并，展示名称、任务标签和 `running`，并汇总 running／idle／unknown 数量。目录有记录但列表未取得状态时保留该项并标 unknown；idle 仅表示当前未运行，不证明任务完成。它是只读快照，不读取子会话正文、不推进读取游标，也不接管子 Agent；主控与子会话取样时间可能不同。
 - `send` 默认使用 `mode: steer`，对应 DSH 的插话发送：输入进入 `next-step`，不必等整轮结束。明确留待下一轮才用 `send --mode queue`，输入进入 `next-turn`。插话不等于取消；要求停工时应使用原生 `session/cancel` 并核对作用范围，本脚本未暴露取消命令。
 - 对已经排队的消息，先从原生 `session/state` 核对队列项 ID、来源 requestId 和内容，再调用 `session/updateQueue`，参数为 `{request:{sessionId,itemId,action:{kind:"steer"}}}`。它保留原消息身份并改为插话，不重新发送正文。仅在目标仍处于 queued 且 Agent 正在运行时可提升；若已被消费或当前不接受插话，如实返回状态，不重发。此操作由明确的用户意图触发，不批量提升其它排队消息。
 - 脚本保留原生被动 `session.wait` 作为连接诊断工具，每次最长 55 秒；它观察 idle、人工输入或超时，不取消 Agent。它不是本模式的通信驱动，禁止以循环等待替代异步入站。

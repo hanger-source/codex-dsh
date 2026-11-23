@@ -146,7 +146,7 @@ async function main() {
       doctor: '只读检查 DSH 原生连接与桌面 Codex queue 能力', sessions: '列出主会话；--workspace 可筛选',
       start: '创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
       attach: '绑定已有主会话并开启 Team；必须 --session ID --workspace PATH',
-      status: '当前绑定与 DSH 原生状态',
+      status: '当前绑定、主控状态与直属子 Agent 名称／运行状态；未运行不等于任务完成',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
@@ -211,7 +211,28 @@ async function main() {
     if (command === 'status') {
       const state = await client.rpc('session/state', { request: { sessionId } });
       const projections = await client.rpc('session/projections', { request: { sessionId } });
-      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, modelSelection: projections?.values?.modelSelection });
+      const sessions = await allSessions(client);
+      const children = new Map(sessions.filter(item => item.parentSessionId === sessionId).map(item => [item.sessionId, item]));
+      const catalog = new Map((projections?.values?.subagentCatalog || []).map(item => [item.id, item]));
+      const ids = new Set([...catalog.keys(), ...children.keys()]);
+      const subagents = [...ids].map(id => {
+        const child = children.get(id);
+        const entry = catalog.get(id);
+        return {
+          sessionId: id,
+          name: entry?.name ?? null,
+          label: entry?.label ?? child?.projections?.values?.subagent?.label ?? child?.projections?.values?.title ?? null,
+          running: typeof child?.running === 'boolean' ? child.running : null,
+        };
+      });
+      const subagentSummary = {
+        total: subagents.length,
+        running: subagents.filter(item => item.running === true).length,
+        idle: subagents.filter(item => item.running === false).length,
+        unknown: subagents.filter(item => item.running === null).length,
+        meaning: '直属子 Agent 的只读快照；idle 不代表任务完成，unknown 表示目录中有记录但本次未取得会话状态。',
+      };
+      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, modelSelection: projections?.values?.modelSelection, subagentSummary, subagents });
     } else if (command === 'send') {
       const text = await inputText(options);
       const mode = options.mode || 'steer';
