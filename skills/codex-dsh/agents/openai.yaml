@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex × DSH 省 Token 协作"
+  short_description: "Codex 把握结构与关键决策，DSH 主控带队执行，原生双向异步通信"
+  default_prompt: "用 $codex-dsh 在当前工作区开启省 token 协作，先看清整体结构，再由 DSH 主控组织执行。"
