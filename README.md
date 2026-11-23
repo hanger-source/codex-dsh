@@ -2,7 +2,7 @@
 
 让 Codex 把高推理能力用在方向、架构与关键判断上，让 DeepSeek Harness（DSH）主会话组织 Agent Team 完成调查、实现、调试与验证。用户主要与 Codex 讨论，两边通过固定会话异步交流。
 
-也可把限定调查、检索整理和多步操作交给独立普通 DSH 会话作为工具：`task` 派发、`task-read` 回查、`task-report` 回传，按范围复用，不占项目主控绑定、不默认开 Team。机制、SDK 与示例单独见 [DSH Agent as tool](skills/codex-dsh/references/agent-as-tool.md)。
+也可把限定调查、检索整理和多步操作交给独立普通 DSH 会话作为工具：`task` 派发、`task-send` 补充、`task-read` 读取、`task --reuse` 接续，DSH 用 `task-report` 回传。SDK 后续操作直接接派发返回的对象，无需再提取 ID 或拼协作消息。按范围复用，不占项目主控绑定、不默认开 Team。机制、SDK 与示例单独见 [DSH Agent as tool](skills/codex-dsh/references/agent-as-tool.md)。
 
 Codex 会亲自查看目录、层次、类型、接口和函数分布，并按需要深入关键链路；DSH 有自己的判断权，不把每一步实现都变成请示。目标是减少高成本模型处理原始资料、重复调查和等待的消耗，并不保证某个固定的 token 节省比例。
 

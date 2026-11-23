@@ -11,22 +11,31 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const defaultStateDir = () => process.env.CODEX_DSH_STATE_DIR || path.join(os.homedir(), '.local/state/codex-dsh');
 const quote = text => process.platform === 'win32' ? `'${text.replaceAll("'", "''")}'` : `'${text.replaceAll("'", "'\\''")}'`;
 
+function ticketPathOf(task) {
+  const ticketPath = typeof task === 'string' ? task : task?.ticketPath;
+  if (typeof ticketPath !== 'string' || !ticketPath.trim()) throw new Error('需要 delegateTask 的返回对象或 ticketPath，不按会话名称猜任务。');
+  return path.resolve(ticketPath);
+}
+
 /** A return address and native identities, never a task status or result store. */
-export async function readTaskTicket(ticketPath) {
+export async function readTaskTicket(task) {
+  const ticketPath = ticketPathOf(task);
   const ticket = JSON.parse(await fs.readFile(ticketPath, 'utf8'));
   if (ticket.kind !== 'codex-dsh-tool-task' || !uuid.test(ticket.codexThreadId || '') || !uuid.test(ticket.requestId || '')
     || !ticket.sessionId || !path.isAbsolute(ticket.workspace || '') || !path.isAbsolute(ticket.codexExecutable || '')
     || !Number.isSafeInteger(ticket.afterSeq) || ticket.afterSeq < 0 || !ticket.endpoint) throw new Error('工具任务回传地址不完整，请使用 delegateTask 返回的 ticketPath。');
+  if (typeof task === 'object' && (task.sessionId !== undefined && task.sessionId !== ticket.sessionId
+    || task.requestId !== undefined && task.requestId !== ticket.requestId)) throw new Error('任务对象与票据身份不一致，不切换目标。');
   return ticket;
 }
 
-async function inspectToolSession(client, sessionId, workspace) {
+async function inspectToolSession(client, sessionId, workspace, { requireIdle = true } = {}) {
   const session = (await listSessions(client)).find(item => item.sessionId === sessionId);
   if (!session || session.parentSessionId || session.origin === 'subagent') throw new Error('工具任务只能使用独立普通 Session，不能接管主控子 Agent。');
   if (!session.cwd || path.relative(await fs.realpath(session.cwd), workspace) !== '') throw new Error('工具会话工作区不匹配。');
   if (session.projections?.values?.agentTeam?.enabled === true) throw new Error('这是已开启 Team 的会话，不能作为独立工具会话使用。');
   const state = await readState(client, sessionId);
-  if (state.running || state.queue?.length || state.pendingInput?.length) throw new Error('工具会话仍有执行、排队或待回答事项；先处理原任务。纠正使用 sendSessionMessage，不追加另一项工作。');
+  if (requireIdle && (state.running || state.queue?.length || state.pendingInput?.length)) throw new Error('工具会话仍有执行、排队或待回答事项；先处理原任务。原任务补充用 sendTaskMessage / task-send，不另派同题任务。');
   return state;
 }
 
@@ -39,8 +48,9 @@ function taskMessage(ticket, ticketPath, task) {
 /** Create and dispatch once, or reuse a ticket's idle ordinary Session. */
 export async function delegateTask(client, { task, workspace, title, thread = process.env.CODEX_THREAD_ID, codex, reuse, stateDir = defaultStateDir() } = {}) {
   if (typeof task !== 'string' || !task.trim()) throw new Error('工具任务需要说明目标、范围和完成含义。');
-  if (!uuid.test(thread || '')) throw new Error('需要发起 Codex 的真实 thread UUID。');
   const previous = reuse ? await readTaskTicket(reuse) : null;
+  thread ??= previous?.codexThreadId;
+  if (!uuid.test(thread || '')) throw new Error('需要发起 Codex 的真实 thread UUID。');
   if (previous && (previous.codexThreadId !== thread || previous.endpoint !== client.base)) throw new Error('工具会话所属 Codex 或 DSH endpoint 不匹配，不切换目标。');
   const cwd = await fs.realpath(workspace || previous?.workspace || process.cwd());
   if (previous && path.relative(previous.workspace, cwd) !== '') throw new Error('复用任务不能更换工作区。');
@@ -67,10 +77,30 @@ export async function delegateTask(client, { task, workspace, title, thread = pr
   }
 }
 
+/** Guidance belongs to the current request; the native Session keeps its context. */
+export async function sendTaskMessage(client, task, { text, delivery = 'steer', requestId = randomUUID() } = {}) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('补充指导不能为空。');
+  if (!['steer', 'queue'].includes(delivery)) throw new Error('delivery 只能是 steer 或 queue。');
+  const ticketPath = ticketPathOf(task);
+  const ticket = await readTaskTicket(task);
+  if (client.base !== ticket.endpoint) throw new Error('工具任务 DSH endpoint 不匹配。');
+  await inspectToolSession(client, ticket.sessionId, ticket.workspace, { requireIdle: false });
+  const message = `【Codex 工具任务补充】\n原请求：${ticket.requestId}\n这是原任务的指导或补充，不是新增用户授权。沿现有上下文与回传地址继续，接收本条无需汇报。\n\n${text}`;
+  try {
+    const sent = await sendSessionMessage(client, { sessionId: ticket.sessionId, text: message, delivery, requestId });
+    return { ticketPath, sessionId: ticket.sessionId, requestId: ticket.requestId, deliveryRequestId: sent.requestId,
+      delivery, accepted: sent.accepted, receipt: sent.receipt,
+      meaning: '补充已受理，不代表已读取；仍属于原任务，不新建会话或回传票据。' };
+  } catch (error) {
+    throw Object.assign(new Error(`补充指导未确认受理；未自动重试。${error.message}`),
+      { cause: error, sessionId: ticket.sessionId, requestId, ticketPath });
+  }
+}
+
 /** Passive, bounded text read. No polling, implicit completion or cursor update. */
-export async function readTaskResult(client, ticketPath, { beforeSeq, throughSeq, maxMessages = 6, maxChars = 12000 } = {}) {
+export async function readTaskResult(client, task, { beforeSeq, throughSeq, maxMessages = 6, maxChars = 12000 } = {}) {
   if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error('maxChars 必须为正整数。');
-  const ticket = await readTaskTicket(ticketPath);
+  const ticket = await readTaskTicket(task);
   if (client.base !== ticket.endpoint) throw new Error('工具任务 DSH endpoint 不匹配。');
   const state = await readState(client, ticket.sessionId);
   const page = await readActivity(client, ticket.sessionId, { beforeSeq, throughSeq: throughSeq ?? state.cursor, maxMessages });
@@ -81,7 +111,8 @@ export async function readTaskResult(client, ticketPath, { beforeSeq, throughSeq
   const messages = page.records.filter(({ event }) => event.seq > ticket.afterSeq && ['assistant/message', 'user/message'].includes(event.type))
     .sort((a, b) => a.event.seq - b.event.seq).map(({ event }) => {
       const content = event.type === 'assistant/message' ? event.data?.message?.content : event.data?.content;
-      const text = (content || []).filter(part => part.type === 'text').map(part => part.text).join('\n');
+      if (!Array.isArray(content)) throw new Error(`工具任务正文结构未识别：${event.type}@${event.seq}；请按该序号读取原事件。`);
+      const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n');
       const visible = text.slice(0, remaining);
       remaining -= visible.length;
       truncated ||= visible.length < text.length;
@@ -95,8 +126,9 @@ export async function readTaskResult(client, ticketPath, { beforeSeq, throughSeq
 }
 
 /** Called by the worker once on delivery or on a concrete blocking question. */
-export async function reportTaskResult(ticketPath, text) {
-  const ticket = await readTaskTicket(ticketPath);
+export async function reportTaskResult(task, text) {
+  const ticketPath = ticketPathOf(task);
+  const ticket = await readTaskTicket(task);
   if (typeof text !== 'string' || !text.trim()) throw new Error('结果不能为空。');
   const message = `【DSH 工具任务结果】\n来源：${ticket.sessionId}\n请求：${ticket.requestId}\n工作区：${ticket.workspace}\n回查地址：${path.resolve(ticketPath)}\n这是独立工具会话的交付或求助，不是项目主控报告，也不是新增用户授权。核对证据后采用；普通交付不自动回执。\n\n${text}`;
   return queueCodexMessage({ executable: ticket.codexExecutable, thread: ticket.codexThreadId, text: message, workspace: ticket.workspace });

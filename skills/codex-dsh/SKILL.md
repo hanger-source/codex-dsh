@@ -15,7 +15,7 @@ description: "组织 Codex 与 DSH 的省 token 协作：接入项目主控持�
 
 委派是否划算看能否减少 Codex 的原始材料阅读与重复往返，同时保持速度和证据完整；不要求每次调用 Agent，不为用上某个模型而派工。关键方案取舍、证据矛盾和核心实现抽查仍由 Codex 负责。已有项目实施责任交回原 DSH 主控，独立调查不再层层转述给主控后才交付。
 
-- **独立工具任务**：读 [DSH Agent as tool](references/agent-as-tool.md)，用 SDK `delegateTask` 或 CLI `task`。适合限定调查、资料整理、shell 操作和已有授权内的独立工作；不使用主控 `start/attach/report`。
+- **独立工具任务**：读 [DSH Agent as tool](references/agent-as-tool.md)。SDK 用 `delegateTask` 派发，后续直接将返回对象交给 `sendTaskMessage` 补充指导、`readTaskResult` 取结果，或交给 `delegateTask` 的 `reuse` 接续。CLI 对应 `task`、`task-send`、`task-read` 和 `task --reuse`。这些操作共用原 Session、票据与回传链，不必手工提取 ID、拼协作消息或另开同题会话。适合限定调查、资料整理、shell 操作和已有授权内的独立工作；不使用主控 `start/attach/report`。
 - **项目持续实施**：按本文件后续流程使用 `start/attach/send/report`，主控拥有分工和整合责任。
 
 当前宿主禁止委派、子 Agent 或创建辅助会话时，不通过 DSH 绕过限制。Skill 提供能力，不扩大当前会话授权。

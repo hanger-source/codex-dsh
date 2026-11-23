@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { decodeText } from './environment.mjs';
 import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
 import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
-import { delegateTask, readTaskTicket, readTaskResult, reportTaskResult } from './sdk.mjs';
+import { delegateTask, sendTaskMessage, readTaskTicket, readTaskResult, reportTaskResult } from './sdk.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
@@ -117,6 +117,7 @@ async function main() {
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
       task: '独立工具任务：--file/--text，--workspace/--title 可选；--reuse TICKET 复用空闲工具会话；不绑定主控或开 Team',
+      'task-send': '补充原工具任务：--ticket PATH --file/--text，默认 steer；不新建任务或票据',
       'task-read': '只读工具任务正文与状态：--ticket PATH；--before/--through/--max-messages/--max-chars，不等待、不推进游标',
       'task-report': '工具会话交付或求助：--ticket PATH --file/--text；回传原 Codex，不使用主控绑定',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
@@ -125,13 +126,13 @@ async function main() {
     return;
   }
   const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'send-agent'];
-  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', 'task', 'task-read', 'task-report', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
+  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', 'task', 'task-send', 'task-read', 'task-report', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
   if (command === 'task-report') {
     if (!options.ticket) throw new Error('task-report 需要 --ticket，不从主控绑定或环境猜回传对象。');
     output(await reportTaskResult(options.ticket, await inputText(options)));
     return;
   }
-  if (command === 'task-read' && !options.ticket) throw new Error('task-read 需要 --ticket。');
+  if (['task-read', 'task-send'].includes(command) && !options.ticket) throw new Error(`${command} 需要 --ticket。`);
   if (command === 'report') {
     if (!options.thread || !options.session) throw new Error('report 必须显式指定 --thread 和 --session，不能从执行环境猜接收者。');
     const binding = await loadBinding(options);
@@ -143,7 +144,7 @@ async function main() {
     output({ codexThreadId: binding.codexThreadId, sessionId: binding.sessionId, queueAccepted: true, receipt: receipt.receipt, meaning: '已入 Codex 原生队列；不代表模型已处理。不等待、不自动重发。' });
     return;
   }
-  const taskTicket = command === 'task-read' ? await readTaskTicket(options.ticket)
+  const taskTicket = ['task-read', 'task-send'].includes(command) ? await readTaskTicket(options.ticket)
     : command === 'task' && options.reuse ? await readTaskTicket(options.reuse) : null;
   const client = new DshClient({ logPath: options.log, urlFile: options['url-file'], expectedEndpoint: taskTicket?.endpoint });
   try {
@@ -151,6 +152,11 @@ async function main() {
     if (command === 'task') {
       output(await delegateTask(client, { task: await inputText(options), workspace: options.workspace, title: options.title,
         thread: options.thread, codex: options.codex, reuse: options.reuse, stateDir: stateRoot }));
+      return;
+    }
+    if (command === 'task-send') {
+      output(await sendTaskMessage(client, options.ticket, { text: await inputText(options), delivery: options.mode || 'steer',
+        requestId: options['request-id'] || randomUUID() }));
       return;
     }
     if (command === 'task-read') {

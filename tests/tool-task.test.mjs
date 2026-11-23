@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { DshClient, delegateTask, readTaskTicket, readTaskResult } from '../skills/codex-dsh/scripts/sdk.mjs';
+import { DshClient, delegateTask, sendTaskMessage, readTaskTicket, readTaskResult } from '../skills/codex-dsh/scripts/sdk.mjs';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "DSH 工具 ' & "));
 const originalCwd = process.cwd();
@@ -66,18 +66,71 @@ test('independent work dispatch and reuse preserve project binding and native re
     const original = JSON.stringify({ sessionId: 'project-controller', afterSeq: 1234 });
     await fs.writeFile(bindingPath, original);
     const first = await delegateTask(client, options);
-    const ticket = await readTaskTicket(first.ticketPath);
+    const ticket = await readTaskTicket(first);
     assert.equal(ticket.sessionId, first.sessionId);
     const delivered = calls.find(call => call.method === 'session/prompt').payload.args.request;
     assert.equal(delivered.requestId, first.requestId);
     assert.equal(delivered.mode, 'queue');
     assert.ok(delivered.content[0].text.includes('task-report --ticket'));
     assert.equal(calls.some(call => call.method.startsWith('agentTeams/')), false);
-    const next = await delegateTask(client, { ...options, reuse: first.ticketPath, task: '沿原接口补查异常返回' });
+    const next = await delegateTask(client, { ...options, reuse: first, task: '沿原接口补查异常返回' });
     assert.equal(next.sessionId, first.sessionId);
     assert.notEqual(next.requestId, first.requestId);
     assert.equal(sessions.length, 1);
     assert.equal(await fs.readFile(bindingPath, 'utf8'), original);
+  });
+});
+
+test('guidance steers the busy original Session and keeps its return address and request history', async () => {
+  await gateway(async ({ client, calls, sessions, state, options }) => {
+    const task = await delegateTask(client, options);
+    const before = await fs.readFile(task.ticketPath, 'utf8');
+    const ticketFiles = await fs.readdir(path.dirname(task.ticketPath));
+    state.running = true;
+    const receipt = await sendTaskMessage(client, task, { text: '重点核对人工接管后的出站', requestId: 'guidance-once' });
+    const sent = calls.filter(call => call.method === 'session/prompt').at(-1).payload.args.request;
+    assert.equal(sent.sessionId, task.sessionId);
+    assert.equal(sent.mode, 'steer');
+    assert.equal(sent.requestId, 'guidance-once');
+    assert.ok(sent.content[0].text.includes(task.requestId));
+    assert.ok(sent.content[0].text.endsWith('重点核对人工接管后的出站'));
+    assert.equal(receipt.requestId, task.requestId);
+    assert.equal(receipt.deliveryRequestId, 'guidance-once');
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(await fs.readdir(path.dirname(task.ticketPath)), ticketFiles);
+    assert.equal(await fs.readFile(task.ticketPath, 'utf8'), before);
+    state.cursor = 20;
+    const result = await readTaskResult(client, task);
+    assert.equal(result.state.running, true);
+    assert.ok(result.messages.some(message => message.text === '有待核实的结果与证据'));
+    state.running = false;
+    const next = await delegateTask(client, { ...options, reuse: task, task: '结合刚才的证据补查权限变化' });
+    assert.equal(next.sessionId, task.sessionId);
+    assert.notEqual(next.requestId, task.requestId);
+    assert.equal((await readTaskTicket(task)).requestId, task.requestId);
+    assert.equal((await readTaskTicket(next)).afterSeq, 20);
+    assert.equal(await fs.readFile(task.ticketPath, 'utf8'), before);
+  });
+});
+
+test('guidance rejects wrong identity or endpoint, and an unconfirmed send is not retried', async () => {
+  await gateway(async ({ client, calls, sessions, options, reject }) => {
+    const task = await delegateTask(client, options);
+    await assert.rejects(sendTaskMessage(client, { ...task, sessionId: 'another' }, { text: '核对权限' }), /身份不一致/);
+    await assert.rejects(readTaskResult(client, { ...task, requestId: 'another' }), /身份不一致/);
+    await assert.rejects(sendTaskMessage({ base: 'http://127.0.0.1:1/' }, task, { text: '核对权限' }), /endpoint/);
+    sessions[0].projections.values.agentTeam.enabled = true;
+    await assert.rejects(sendTaskMessage(client, task, { text: '核对权限' }), /Team/);
+    sessions[0].projections.values.agentTeam.enabled = false;
+    reject();
+    await assert.rejects(sendTaskMessage(client, task, { text: '核对权限', requestId: 'unconfirmed-guidance' }), error => {
+      assert.equal(error.sessionId, task.sessionId);
+      assert.equal(error.requestId, 'unconfirmed-guidance');
+      assert.equal(error.ticketPath, task.ticketPath);
+      return /未自动重试/.test(error.message);
+    });
+    assert.equal(calls.filter(call => call.method === 'session/prompt').length, 2);
+    assert.equal(sessions.length, 1);
   });
 });
 
