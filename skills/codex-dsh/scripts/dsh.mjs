@@ -8,11 +8,12 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readUsage, readActivity, summarizeActivity, sendAgentMessage } from './session.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const stateRoot = process.env.CODEX_DSH_STATE_DIR || path.join(home, '.local/state/codex-dsh');
-const optionNames = ['thread', 'workspace', 'session', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex', 'mode'];
+const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex', 'mode'];
 const execFileAsync = promisify(execFile);
 const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
@@ -76,7 +77,10 @@ export class DshClient {
     if (!response.ok) throw new Error(`${method}: HTTP ${response.status}`);
     const body = await response.json();
     if (body.rpcId !== rpcId || body.type !== 'server-response') throw new Error('DSH 返回了不匹配的 RPC 应答。');
-    if (!body.result?.ok) throw new Error(`${method}: ${body.result?.error?.code}: ${body.result?.error?.message}`);
+    if (!body.result?.ok) {
+      const failure = body.result?.error;
+      throw Object.assign(new Error(`${method}: ${failure?.code}: ${failure?.message}`), { code: failure?.code, details: failure?.details });
+    }
     return body.result.value;
   }
   async close() {
@@ -103,7 +107,7 @@ async function saveBinding(options, binding) {
   await fs.rename(temporary, destination);
 }
 async function allSessions(client) {
-  return (await client.rpc('session/list', { _request: {} })).items;
+  return listSessions(client);
 }
 function summary(item) {
   const p = item.projections?.values || {};
@@ -138,6 +142,35 @@ function messageText(record) {
   const parts = message?.content;
   return Array.isArray(parts) ? parts.filter(p => p.type === 'text').map(p => p.text).join('\n') : '';
 }
+async function atomicCommand(client, command, options) {
+  // Explicit identities do not create or change bindings. Imported functions need none.
+  const binding = options.session ? null : await loadBinding(options);
+  if (binding && client.base !== binding.endpoint) throw new Error('当前 DSH 地址与绑定不符。');
+  const rootSessionId = options.session || binding.sessionId;
+  if (command === 'agents') return listAgents(client, rootSessionId);
+  if (command === 'send-agent') {
+    if (!options.agent) throw new Error('send-agent 必须显式指定 --agent。');
+    const requestId = options['request-id'] || randomUUID();
+    // Emit identity before dispatch so an uncertain response can be reconciled.
+    process.stderr.write(JSON.stringify({ requestId, rootSessionId, target: options.agent, delivery: options.mode || 'steer' }) + '\n');
+    return sendAgentMessage(client, { rootSessionId, target: options.agent, text: await inputText(options), delivery: options.mode || 'steer', requestId });
+  }
+  if (command === 'tasks') {
+    if (options.agent) throw new Error('任务板属于主控；用 --session ROOT 查询后，按 ownerId 筛选。');
+    return readTasks(client, rootSessionId);
+  }
+  const { sessionId } = await resolveAgent(client, rootSessionId, options.agent);
+  if (command === 'state') return readState(client, sessionId);
+  if (command === 'projections') return readProjections(client, sessionId, options.keys?.split(','));
+  if (command === 'usage') return readUsage(client, sessionId);
+  if (options.detail !== undefined && !['summary', 'full'].includes(options.detail)) throw new Error('detail 只能是 summary 或 full。');
+  const page = await readActivity(client, sessionId, {
+    beforeSeq: options.before === undefined ? undefined : Number(options.before),
+    throughSeq: options.through === undefined ? undefined : Number(options.through),
+    maxMessages: numberOption(options['max-messages'], 12, 1000),
+  });
+  return options.detail === 'full' ? page : summarizeActivity(page);
+}
 async function main() {
   const { values: options, positionals } = parseArgs({ allowPositionals: true, options: Object.fromEntries(optionNames.map(name => [name, { type: 'string' }])) });
   const command = positionals[0];
@@ -147,6 +180,13 @@ async function main() {
       start: '创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
       attach: '绑定已有主会话并开启 Team；必须 --session ID --workspace PATH',
       status: '当前绑定、主控状态与直属子 Agent 名称／运行状态；未运行不等于任务完成',
+      agents: '子 Agent 树（含嵌套）；--session ROOT 或当前绑定',
+      state: '原生运行状态、队列及待人工输入；--session ID 或绑定主控，--agent PATH 可选',
+      projections: '原生投影；--keys key1,key2 可选；可指定 --agent PATH',
+      tasks: '主控原生任务板，含负责人、依赖、写入范围；可在 JSON 中按 ownerId 筛选',
+      usage: '原生 token、计时及模型投影；可指定 --agent PATH',
+      activity: '有界历史事件；--before SEQ --through SEQ --max-messages N；默认元数据，--detail full 读完整页',
+      'send-agent': '向子 Agent 投递；--agent PATH或ID --file/--text；--session ROOT 或绑定主控，--mode steer/queue',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
@@ -154,7 +194,8 @@ async function main() {
     }, connection: '--log 当前 DSH 启动日志，或 --url-file 本机启动地址文件；--dsh-package 安装 package.json 路径；--codex 桌面配套CLI绝对路径', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
     return;
   }
-  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read'].includes(command)) throw new Error('未知命令；运行 help 查看。');
+  const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'usage', 'activity', 'send-agent'];
+  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
   if (command === 'report') {
     if (!options.thread || !options.session) throw new Error('report 必须显式指定 --thread 和 --session，不能从执行环境猜接收者。');
     const binding = await loadBinding(options);
@@ -169,6 +210,10 @@ async function main() {
   const client = new DshClient(options);
   try {
     await client.connect();
+    if (atomicCommands.includes(command)) {
+      output(await atomicCommand(client, command, options));
+      return;
+    }
     if (command === 'doctor') {
       const page = await client.rpc('session/list', { _request: {} });
       const codex = await checkCodex(options);
@@ -209,22 +254,9 @@ async function main() {
     if (client.base !== binding.endpoint) throw new Error('当前 DSH 地址与绑定不符；请核对启动日志与目标会话。');
     const sessionId = binding.sessionId;
     if (command === 'status') {
-      const state = await client.rpc('session/state', { request: { sessionId } });
-      const projections = await client.rpc('session/projections', { request: { sessionId } });
-      const sessions = await allSessions(client);
-      const children = new Map(sessions.filter(item => item.parentSessionId === sessionId).map(item => [item.sessionId, item]));
-      const catalog = new Map((projections?.values?.subagentCatalog || []).map(item => [item.id, item]));
-      const ids = new Set([...catalog.keys(), ...children.keys()]);
-      const subagents = [...ids].map(id => {
-        const child = children.get(id);
-        const entry = catalog.get(id);
-        return {
-          sessionId: id,
-          name: entry?.name ?? null,
-          label: entry?.label ?? child?.projections?.values?.subagent?.label ?? child?.projections?.values?.title ?? null,
-          running: typeof child?.running === 'boolean' ? child.running : null,
-        };
-      });
+      const [state, projections, subagents] = await Promise.all([
+        readState(client, sessionId), readProjections(client, sessionId), listAgents(client, sessionId, { recursive: false }),
+      ]);
       const subagentSummary = {
         total: subagents.length,
         running: subagents.filter(item => item.running === true).length,

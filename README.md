@@ -70,6 +70,20 @@ node "$HOME/.agents/skills/codex-dsh/scripts/dsh.mjs" doctor
 
 DSH 连接凭据在运行时从本机启动信息取得，仅用于本机连接，不写入绑定文件。仓库不包含任何用户会话、日志、模型凭据或工作区内容。协作消息也不代表新增的人类授权；发布、外发和其他需要授权的操作仍遵守原任务边界。
 
+## 可组合的会话能力
+
+子树、状态与队列、任务板、用量和历史查询可单独使用，也可导入 JavaScript 自由组合；`status` 是其中一种组合视图。已有子 Agent 可通过原生投递接口获得局部指导，继续向原主控交付，跨模块分工由主控统筹。
+
+```sh
+D="$HOME/.agents/skills/codex-dsh/scripts/dsh.mjs"
+node "$D" agents --session ROOT_ID
+node "$D" state --session ROOT_ID --agent investigator
+node "$D" tasks --session ROOT_ID
+node "$D" activity --session ROOT_ID --agent investigator --max-messages 3
+```
+
+`scripts/session.mjs` 的函数接受已连接的 `DshClient`，复用连接，不依赖本机绑定，不建立第二份任务状态。使用者按需组织查询与消息，详见 [函数、CLI、历史分页与投递边界](skills/codex-dsh/references/session-tools.md)。
+
 ## 可组合的工程观察
 
 Skill 还提供文件枚举、声明提取、Git 差异和紧凑展示函数，供 Agent 单独调用或导入自己的 JavaScript。Agent 自己选择范围、变换数据和组织判断，工具不规定审查流程。
@@ -91,6 +105,7 @@ skills/codex-dsh/
 ├── agents/openai.yaml          # Codex Skill 元数据
 ├── scripts/
 │   ├── dsh.mjs                 # 原生会话操作与双向投递
+│   ├── session.mjs             # 独立会话查询、子树发现与子 Agent 投递
 │   ├── project.mjs             # 可独立组合的工程观察与展示函数
 │   └── typescript-outline.mjs  # TypeScript 原生语法提取
 └── references/
