@@ -43,6 +43,27 @@ try {
 } finally { await client.close(); }
 ```
 
+历史正文也先在程序内提取。`assistant/message` 的 `event.data` 同时可能含已提交 message、stream、usage；直接输出整条 event 会把流式片段与完整正文一起送进上下文。下面用已经选定的 sessionId 和 selectedSeqs 读取提交文字：
+
+```js
+const { readActivity } = await import('/absolute/skill/scripts/sdk.mjs');
+const page = await readActivity(client, sessionId, { maxMessages: 3 });
+const messages = [];
+for (const { event } of page.records) {
+  if (!selectedSeqs.has(event.seq)) continue;
+  let content;
+  if (event.type === 'assistant/message') content = event.data.message.content;
+  else if (event.type === 'user/message') content = event.data.content;
+  else continue;
+  if (!Array.isArray(content)) throw new Error(`未识别的正文结构：${event.type}@${event.seq}`);
+  const text = content.filter(part => part.type === 'text').map(part => part.text).join('\n');
+  messages.push({ seq: event.seq, type: event.type, text });
+}
+console.log(JSON.stringify({ sessionId, cursor: page.cursor, hasMore: page.hasMore, messages }));
+```
+
+selectedSeqs 可由先前的事件元数据选择；返回页没有包含所需 seq 时，继续按 beforeSeq／throughSeq 读对应范围，不能把空结果解释为没有消息。这里仅查看选中的提交文字，不输出 stream、reasoning、usage；工具结果、附件或协作消息的其它结构按当前问题从对应事件定向提取，不能为省 token 丢掉决定结论的内容。保留 seq、来源与运行身份便于回读；这一页、选定文字和完整历史分别表达，不把其中一个冒充另一个。使用现有原子函数和普通 JavaScript 即可，不另建摘要服务或读取协议。
+
 同样可以只用 CLI 和 `jq`，无需先执行 status：
 
 ```sh
