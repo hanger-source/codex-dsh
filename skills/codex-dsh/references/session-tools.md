@@ -13,12 +13,12 @@ Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `impo
 | `connectDsh({logPath?, urlFile?, expectedEndpoint?})` | 建立本机连接，返回 client；可核对已有绑定 endpoint。使用 Node 内置 WebSocket，无需指定 DSH 安装目录。调用方在 finally 中 close，不重启服务，不创建 Agent。 |
 | `readBinding({thread?, stateDir?})` | 只读当前或明确指定的 Codex 绑定。省略 thread 时使用 CODEX_THREAD_ID；没有绑定就报错，不猜其它会话。 |
 | `listSessions(client)` | 原生会话列表，含父子关系及投影；数据可能较大，先在代码或管道中选材再交模型。 |
-| `listAgents(client, rootSessionId, {recursive?, sessions?})` | 子树目录及运行快照。默认递归，返回路径、父 ID、名称、标签、模式、运行状态、更新时间及 `catalogAvailable`。可复用已经取得的 sessions；目录记录缺少会话状态时 `running:null`，子目录不可读时保留该行并以 `catalogAvailable:false` 表达，不能据此断言没有后代。 |
-| `resolveAgent(client, rootSessionId, target)` | 在指定子树中按完整路径或 ID 找成员。省略 target 或指定根 ID 时返回根；歧义、归属冲突或不在树内会拒绝。 |
-| `readState(client, sessionId)` | 原生 cursor、active、running、完整消息队列和待人工输入类别；缺少 live Agent 时队列可为 null。 |
-| `readProjections(client, sessionId, keys?)` | 原生 sequenced／migration-required 及 asOfSeq；可只保留指定投影。不存在的会话返回 null；不存在的 key 不凭空补值。 |
+| `listAgents(client, rootSessionId, {recursive?, sessions?})` | 子树目录及运行快照。默认递归，返回路径、父 ID、名称、标签、模式、原生 `address`、运行状态、更新时间及 `catalogAvailable`。可复用已经取得的 sessions；目录记录缺少会话状态时 `running:null`，子目录不可读时保留该行并以 `catalogAvailable:false` 表达，不能据此断言没有后代。 |
+| `resolveAgent(client, rootSessionId, target)` | 在指定子树中按完整路径或 ID 找成员，返回可直接用于读取的对象及原生 `address`。省略 target 或指定根 ID 时返回根；歧义、归属冲突或不在树内会拒绝。 |
+| `readState(client, target)` | target 可为普通 Session ID、原生地址或目录／resolveAgent 返回对象。按原生合同只向 state 传所选 Session ID，返回 cursor、active、running、完整队列和待人工输入类别；缺少 live Agent 时队列可为 null。不激活 Agent。 |
+| `readProjections(client, target, keys?)` | 接同样的 target，按原生合同传所选 Session ID；返回 sequenced／migration-required 及 asOfSeq，可只保留指定投影。不存在的会话返回 null；不存在的 key 不凭空补值。 |
 | `readTasks(client, rootSessionId)` | 根会话的原生 agentTeam 投影，含任务状态、ownerId、blockedBy、writeScopes 和原生诊断。空任务板不代表没有子 Agent 工作，主控可能未使用任务板。 |
-| `readActivity(client, sessionId, {beforeSeq?, throughSeq?, maxMessages?})` | 有界、向前翻页的原生事件 records、cursor、hasMore。maxMessages 限制消息数量，期间工具等事件也保留。不会推进绑定游标；首次 cursor 可作为后续 throughSeq 固定观察窗口，下一页 beforeSeq 用本页最小 seq。 |
+| `readActivity(client, target, {beforeSeq?, throughSeq?, maxMessages?})` | 接普通 Session ID、原生地址或目录／resolveAgent 返回对象。子 Agent 必须保留直接父 ID、子 ID 与 mode 的原生 address，不能拆成裸子 ID；嵌套成员用直接父而不是总主控。返回有界历史 records、cursor、hasMore，maxMessages 限制消息数量，期间工具事件保留。不激活、不推进游标；下一页 beforeSeq 用本页最小 seq，throughSeq 可固定观察窗口。 |
 | `summarizeActivity(page)` | 只投影事件 seq／time／type，保留 hasMore、cursor、nextBeforeSeq。需要正文时读取原 page.records，不把元数据视图当完整内容。 |
 | `sendAgentMessage(client, {rootSessionId, target, text, delivery?, requestId?, clientTimeZone?})` | 在已核对的子树中，向 continuable 子 Agent 的原生 `subagents/prompt` 投递。默认 steer，queue 留待后续轮次；返回原生 messageId 与请求身份。不投根会话、不创建绑定、不改任务板、不自动通知主控、不重试。 |
 | `sendSessionMessage(client, {sessionId, text, delivery?, requestId?, clientTimeZone?})` | 向主控等普通会话投递。返回请求身份和原生 receipt，不依赖 CLI 或写绑定；子会话身份由原生所有权检查拒绝。 |
@@ -40,12 +40,14 @@ try {
   // 整体关系已在内存，自己选择需要深入的对象，不把全量投影交给模型。
   const target = agents.find(agent => agent.path === 'investigator');
   if (target) {
-    const state = await readState(client, target.sessionId);
+    const state = await readState(client, target);
     console.log(JSON.stringify({ agent: target.path, running: state.running,
       pendingInput: state.pendingInput, queued: state.queue?.length ?? null }));
   }
 } finally { await client.close(); }
 ```
+
+读取子 Agent 活动时，直接传上面取得的 `target`：`await readActivity(client, target, {maxMessages: 3})`；也可传 `target.address`。已知名称时先 `resolveAgent(client, rootSessionId, 'reader/audit')`，再将整个结果传入读取函数，不要只保留 sessionId。原生历史接口会校验直接父关系与模式，裸子 ID 会被拒绝；SDK 不靠失败后重试其它地址绕过检查。CLI 的 `activity --session ROOT --agent NAME` 沿同一解析结果读取，状态和投影查询仍遵守各自的原生合同。
 
 历史正文也先在程序内提取。`assistant/message` 的 `event.data` 同时可能含已提交 message、stream、usage；直接输出整条 event 会把流式片段与完整正文一起送进上下文。下面用已经选定的 sessionId 和 selectedSeqs 读取提交文字：
 

@@ -88,11 +88,11 @@ async function atomicCommand(client, command, options) {
     if (options.agent) throw new Error('任务板属于主控；用 --session ROOT 查询后，按 ownerId 筛选。');
     return readTasks(client, rootSessionId);
   }
-  const { sessionId } = await resolveAgent(client, rootSessionId, options.agent);
-  if (command === 'state') return readState(client, sessionId);
-  if (command === 'projections') return readProjections(client, sessionId, options.keys?.split(','));
+  const target = await resolveAgent(client, rootSessionId, options.agent);
+  if (command === 'state') return readState(client, target);
+  if (command === 'projections') return readProjections(client, target, options.keys?.split(','));
   if (options.detail !== undefined && !['summary', 'full'].includes(options.detail)) throw new Error('detail 只能是 summary 或 full。');
-  const page = await readActivity(client, sessionId, {
+  const page = await readActivity(client, target, {
     beforeSeq: options.before === undefined ? undefined : Number(options.before),
     throughSeq: options.through === undefined ? undefined : Number(options.through),
     maxMessages: numberOption(options['max-messages'], 12, 1000),

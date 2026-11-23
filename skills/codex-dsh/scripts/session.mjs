@@ -5,11 +5,30 @@ export async function listSessions(client) {
   return (await client.rpc('session/list', { _request: {} })).items;
 }
 
-export function readState(client, sessionId) {
+// Accept native addresses or resolved agents without discarding durable parent identity.
+function observationAddress(target) {
+  const address = typeof target === 'string' ? { kind: 'session', sessionId: target } : target?.address ?? target;
+  const isId = id => typeof id === 'string' && id.trim().length > 0;
+  if (address?.kind === 'session' && isId(address.sessionId)) return { kind: 'session', sessionId: address.sessionId };
+  if (address?.kind === 'subagent' && isId(address.parentSessionId) && isId(address.childSessionId)
+    && ['one-shot', 'continuable', 'unknown'].includes(address.mode)) {
+    return { kind: 'subagent', parentSessionId: address.parentSessionId, childSessionId: address.childSessionId, mode: address.mode };
+  }
+  throw new Error('读取需要普通 Session ID、原生 SessionAddress 或 resolveAgent 的结果；子 Agent 不能省略直接父地址和模式。');
+}
+
+function observationId(target) {
+  const address = observationAddress(target);
+  return address.kind === 'session' ? address.sessionId : address.childSessionId;
+}
+
+export function readState(client, target) {
+  const sessionId = observationId(target);
   return client.rpc('session/state', { request: { sessionId } });
 }
 
-export async function readProjections(client, sessionId, keys) {
+export async function readProjections(client, target, keys) {
+  const sessionId = observationId(target);
   const result = await client.rpc('session/projections', { request: { sessionId } });
   if (result === null || keys === undefined) return result;
   return { ...result, values: Object.fromEntries(keys.filter(key => Object.hasOwn(result.values, key)).map(key => [key, result.values[key]])) };
@@ -41,10 +60,12 @@ export async function listAgents(client, rootSessionId, { recursive = true, sess
       if (child?.parentSessionId !== undefined && child.parentSessionId !== parentId) throw new Error(`子 Agent 归属与目录冲突：${id}`);
       const name = entry?.name ?? null;
       const agentPath = prefix === null || name === null ? null : (prefix ? `${prefix}/${name}` : name);
+      const mode = entry?.mode ?? null;
       rows.push({
         sessionId: id, parentSessionId: parentId, name, path: agentPath, depth,
+        address: { kind: 'subagent', parentSessionId: parentId, childSessionId: id, mode: mode ?? 'unknown' },
         label: entry?.label ?? child?.projections?.values?.subagent?.label ?? child?.projections?.values?.title ?? null,
-        mode: entry?.mode ?? null,
+        mode,
         running: typeof child?.running === 'boolean' ? child.running : null,
         updatedAt: child?.updatedAt ?? null,
         catalogAvailable: Array.isArray(child?.projections?.values?.subagentCatalog),
@@ -57,19 +78,20 @@ export async function listAgents(client, rootSessionId, { recursive = true, sess
 }
 
 export async function resolveAgent(client, rootSessionId, target) {
-  if (target === rootSessionId || target === undefined) return { sessionId: rootSessionId, root: true };
+  if (target === rootSessionId || target === undefined) return { sessionId: rootSessionId, root: true, address: { kind: 'session', sessionId: rootSessionId } };
   const matches = (await listAgents(client, rootSessionId)).filter(item => item.sessionId === target || item.path === target);
   if (matches.length !== 1) throw new Error(`子 Agent 不存在或名称有歧义：${target}；先用 agents 查看路径或精确 ID。`);
   return { ...matches[0], root: false };
 }
 
-export async function readActivity(client, sessionId, { beforeSeq, throughSeq, maxMessages = 12 } = {}) {
+export async function readActivity(client, target, { beforeSeq, throughSeq, maxMessages = 12 } = {}) {
+  const address = observationAddress(target);
   if (!Number.isSafeInteger(maxMessages) || maxMessages < 1) throw new Error('maxMessages 必须为正整数。');
   for (const value of [beforeSeq, throughSeq]) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error('历史序号必须为非负整数。');
   }
   return client.rpc('session/events', { request: {
-    address: { kind: 'session', sessionId }, maxMessages,
+    address, maxMessages,
     ...(beforeSeq === undefined ? {} : { beforeSeq }),
     ...(throughSeq === undefined ? {} : { throughSeq }),
   } });
