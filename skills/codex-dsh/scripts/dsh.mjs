@@ -9,11 +9,12 @@ import { fileURLToPath } from 'node:url';
 import { decodeText } from './environment.mjs';
 import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
 import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
+import { delegateTask, readTaskTicket, readTaskResult, reportTaskResult } from './sdk.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const stateRoot = process.env.CODEX_DSH_STATE_DIR || path.join(home, '.local/state/codex-dsh');
-const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'codex', 'mode'];
+const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'codex', 'mode', 'ticket', 'reuse'];
 
 
 async function inputText(options) {
@@ -115,13 +116,22 @@ async function main() {
       'send-agent': '向子 Agent 投递；--agent PATH或ID --file/--text；--session ROOT 或绑定主控，--mode steer/queue',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
+      task: '独立工具任务：--file/--text，--workspace/--title 可选；--reuse TICKET 复用空闲工具会话；不绑定主控或开 Team',
+      'task-read': '只读工具任务正文与状态：--ticket PATH；--before/--through/--max-messages/--max-chars，不等待、不推进游标',
+      'task-report': '工具会话交付或求助：--ticket PATH --file/--text；回传原 Codex，不使用主控绑定',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
       read: '立即读取增量答复；--after SEQ --max-messages N --max-chars N 可扩大窗口',
     }, connection: '官方 Desktop 接入插件自动提供入口；Web 使用 --log 或 --url-file；--codex 桌面配套 CLI 绝对路径（Windows 为 codex.exe）。需要 Node.js 22.22.3 或 24+，不依赖 DSH 安装目录。', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
     return;
   }
   const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'send-agent'];
-  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
+  if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', 'task', 'task-read', 'task-report', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
+  if (command === 'task-report') {
+    if (!options.ticket) throw new Error('task-report 需要 --ticket，不从主控绑定或环境猜回传对象。');
+    output(await reportTaskResult(options.ticket, await inputText(options)));
+    return;
+  }
+  if (command === 'task-read' && !options.ticket) throw new Error('task-read 需要 --ticket。');
   if (command === 'report') {
     if (!options.thread || !options.session) throw new Error('report 必须显式指定 --thread 和 --session，不能从执行环境猜接收者。');
     const binding = await loadBinding(options);
@@ -133,9 +143,22 @@ async function main() {
     output({ codexThreadId: binding.codexThreadId, sessionId: binding.sessionId, queueAccepted: true, receipt: receipt.receipt, meaning: '已入 Codex 原生队列；不代表模型已处理。不等待、不自动重发。' });
     return;
   }
-  const client = new DshClient({ logPath: options.log, urlFile: options['url-file'] });
+  const taskTicket = command === 'task-read' ? await readTaskTicket(options.ticket)
+    : command === 'task' && options.reuse ? await readTaskTicket(options.reuse) : null;
+  const client = new DshClient({ logPath: options.log, urlFile: options['url-file'], expectedEndpoint: taskTicket?.endpoint });
   try {
     await client.connect();
+    if (command === 'task') {
+      output(await delegateTask(client, { task: await inputText(options), workspace: options.workspace, title: options.title,
+        thread: options.thread, codex: options.codex, reuse: options.reuse, stateDir: stateRoot }));
+      return;
+    }
+    if (command === 'task-read') {
+      output(await readTaskResult(client, options.ticket, { beforeSeq: options.before === undefined ? undefined : Number(options.before),
+        throughSeq: options.through === undefined ? undefined : Number(options.through),
+        maxMessages: numberOption(options['max-messages'], 6, 1000), maxChars: numberOption(options['max-chars'], 12000, 500000) }));
+      return;
+    }
     if (atomicCommands.includes(command)) {
       output(await atomicCommand(client, command, options));
       return;
@@ -220,5 +243,6 @@ async function main() {
   } finally { await client.close(); }
 }
 if (process.argv[1] && path.relative(await fs.realpath(process.argv[1]), await fs.realpath(fileURLToPath(import.meta.url))) === '') {
-  main().catch(error => { process.stderr.write(JSON.stringify({ error: String(error.message).replace(/token=[^\s&]+/g, 'token=[redacted]') }) + '\n'); process.exitCode = 1; });
+  main().catch(error => { process.stderr.write(JSON.stringify({ error: String(error.message).replace(/token=[^\s&]+/g, 'token=[redacted]'),
+    ...(error.sessionId ? { sessionId: error.sessionId, requestId: error.requestId, ticketPath: error.ticketPath } : {}) }) + '\n'); process.exitCode = 1; });
 }

@@ -2,6 +2,8 @@
 
 让 Codex 把高推理能力用在方向、架构与关键判断上，让 DeepSeek Harness（DSH）主会话组织 Agent Team 完成调查、实现、调试与验证。用户主要与 Codex 讨论，两边通过固定会话异步交流。
 
+也可把限定调查、检索整理和多步操作交给独立普通 DSH 会话作为工具：`task` 派发、`task-read` 回查、`task-report` 回传，按范围复用，不占项目主控绑定、不默认开 Team。机制、SDK 与示例单独见 [DSH Agent as tool](skills/codex-dsh/references/agent-as-tool.md)。
+
 Codex 会亲自查看目录、层次、类型、接口和函数分布，并按需要深入关键链路；DSH 有自己的判断权，不把每一步实现都变成请示。目标是减少高成本模型处理原始资料、重复调查和等待的消耗，并不保证某个固定的 token 节省比例。
 
 ## 安装
@@ -41,7 +43,7 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 
 - Codex 派活后可以结束当前轮次，不需要挂着等待。
 - Codex 发给 DSH 的指导默认插话发送，DSH 在下一步读取，不必等整轮结束；明确要留到下一轮的任务可用 `send --mode queue`。
-- DSH 在有阶段成果、方向性问题或需要讨论的关键决策时主动汇报。
+- DSH 在约定的整批交付完成、确需 Codex 判断的阻塞或关键反证出现时主动汇报；普通修复、测试计数、接收和等待不逐条唤醒。
 - DSH 的汇报进入原 Codex 会话队列，由原会话继续处理。正在执行时不强行打断；队列接受不等于模型已处理。
 - Codex 的反馈进入原 DSH 会话，双方保留各自上下文。普通回执不触发反复互发消息。
 
@@ -116,6 +118,8 @@ skills/codex-dsh/
 ├── agents/openai.yaml          # Codex Skill 元数据
 ├── scripts/
 │   ├── sdk.mjs                 # 公开 SDK 入口、连接、绑定读取与 Codex 投递
+│   ├── tool-task.mjs           # 独立普通 Session 工具任务、回查与回传
+│   ├── codex.mjs               # Codex 原生 queue 与配套 CLI 检查
 │   ├── environment.mjs         # 连接入口、编码与 CLI 路径识别
 │   ├── dsh.mjs                 # 可选 CLI 封装
 │   ├── session.mjs             # 独立会话查询、子树发现与子 Agent 投递
@@ -123,8 +127,10 @@ skills/codex-dsh/
 │   └── typescript-outline.mjs  # TypeScript 原生语法提取
 ├── assets/desktop-plugin/      # 官方 Desktop 原生 Token 接入插件
 └── references/
+    ├── agent-as-tool.md        # 工具任务机制与独立用法
     ├── dsh-brief.md            # 交给 DSH 主控的协作约定
     ├── native-link.md          # 接口、状态及诊断说明
+    ├── session-tools.md        # Session SDK 组合示例
     └── project-tools.md        # 工程观察组合示例
 ```
 

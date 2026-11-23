@@ -75,6 +75,8 @@ Codex 侧默认绑定当前 `CODEX_THREAD_ID`，创建绑定必须是实际 UUID
 
 绑定文件保存 Codex UUID 与配套 CLI 路径、DSH Session ID、真实工作区、无 token 的地址、读取游标和最近投递请求编号。它只保存双方关联，不保存模型历史、任务生命周期或消息副本。原生会话仍是上下文、执行和队列的 owner。
 
+这是一对一的项目主控绑定。独立 [DSH 工具任务](agent-as-tool.md) 通过 `task/task-read/task-report` 使用另外的普通会话与回传票据，不覆盖绑定、不调用 `start/attach`，也不能借主控 `report` 冒充来源。
+
 当前线程没有绑定时才 `start/attach`。已有绑定需要改接另一会话时，先确认原 DSH 主控是否仍在执行以及用户是否要求停止；不能仅因换绑取消旧任务。将确实要退出的绑定移入该状态目录的 `.trash/` 后再接入，不永久删除或覆盖。应用重启导致地址变化时，先用新地址的 `sessions` 核对同一 Session ID 与工作区，再只修改该绑定的无凭据 endpoint。
 
 ## 请求与结果边界

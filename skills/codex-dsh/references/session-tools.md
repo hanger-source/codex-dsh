@@ -6,6 +6,8 @@ Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `impo
 
 目标是减少 Codex 的 token 消耗和协作摩擦：原始返回留在程序内，向模型只输出影响当前判断的信息；已知数据可以复用，不为每个筛选重新启动命令和查询。遇到疑点仍读取关键正文与真实实现，不能把少输出误当成可以遗漏证据。
 
+需要把限定调查或多步操作直接交给独立普通 DSH 会话时，使用 [DSH Agent as tool](agent-as-tool.md) 的 `delegateTask/readTaskResult/reportTaskResult`，同样从本 SDK 导入。它与项目主控绑定分开；这里的底层查询和投递函数仍可自由组合。
+
 | 函数 | 作用与返回边界 |
 | --- | --- |
 | `connectDsh({logPath?, urlFile?, expectedEndpoint?})` | 建立本机连接，返回 client；可核对已有绑定 endpoint。使用 Node 内置 WebSocket，无需指定 DSH 安装目录。调用方在 finally 中 close，不重启服务，不创建 Agent。 |
