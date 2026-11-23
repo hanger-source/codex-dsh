@@ -77,11 +77,11 @@ Skill 还提供文件枚举、声明提取、Git 差异和紧凑展示函数，�
 ```sh
 P="$HOME/.agents/skills/codex-dsh/scripts/project.mjs"
 node "$P" files /absolute/project --depth 2
-node "$P" symbols /absolute/project src --kind class,interface,type,function
+node "$P" symbols /absolute/project src --kind class,interface,type,function --detail names
 node "$P" changes /absolute/project --since main
 ```
 
-默认输出合并目录和作用域后的文本；JSON 用于管道或保存中间结果，避免把重复字段和路径灌入模型。TS 声明由项目的 TypeScript 编译器提取，其他常见语言复用 Universal Ctags。文件枚举使用 ripgrep；仅调用差异与展示函数无需解析器。详见 [组合示例与边界](skills/codex-dsh/references/project-tools.md)。
+输出覆盖整个选定范围，不分页、不截短签名。名称视图按作用域合并全部声明名称，签名视图完整展示声明；可独立按路径、名称、类型、作用域或静态模块引用检索。JSON 用于管道或保存中间结果，避免把重复字段和路径灌入模型。TS 声明由项目的 TypeScript 编译器提取，其他常见语言复用 Universal Ctags。文件枚举使用 ripgrep；仅调用差异与展示函数无需解析器。详见 [组合示例与边界](skills/codex-dsh/references/project-tools.md)。
 
 ## 仓库结构
 

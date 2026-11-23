@@ -30,13 +30,6 @@ function matches(file, prefix) {
   const p = prefix.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
   return file === p || file.startsWith(p + '/');
 }
-function displayPage(items, options, lines) {
-  const offset = options.offset ?? 0, limit = options.limit ?? 80;
-  const selected = items.slice(offset, offset + limit);
-  lines.push('显示 ' + (selected.length ? offset + 1 : 0) + '–' + (offset + selected.length) + '/' + items.length
-    + (offset + selected.length < items.length ? '；下一页 --offset ' + (offset + selected.length) : ''));
-  return selected;
-}
 
 // Inventory only. No parsing, cache, required follow-up, or project mutation.
 export function listFiles(root, { exclude = [] } = {}) {
@@ -129,6 +122,20 @@ export function gitChanges(root, { since = 'HEAD' } = {}) {
 }
 
 // Renderers accept ordinary data. Filtering, selection and persistence belong to the caller.
+export function selectSymbols(data, options = {}) {
+  const kinds = options.kind?.split(',');
+  const contains = (value, query) => !query || value.toLowerCase().includes(query.toLowerCase());
+  const symbolQuery = options.kind || options.name || options.scope || options.text;
+  const files = data.files.filter(file => matches(file.path, options.path)
+    && (!options.imports || file.imports?.some(value => contains(value, options.imports))))
+    .map(file => ({ ...file, symbols: file.symbols.filter(symbol =>
+      (!kinds || kinds.includes(symbol.kind))
+      && contains(qualified(symbol.scope, symbol.name), options.name)
+      && contains(symbol.scope || '', options.scope)
+      && contains(symbol.declaration, options.text)) }))
+    .filter(file => file.symbols.length || !symbolQuery || file.problem || file.diagnostics?.length);
+  return { ...data, files };
+}
 export function compactPaths(paths, options = {}) {
   const groups = new Map(), depth = options.depth ?? Infinity;
   for (const name of paths) {
@@ -137,9 +144,9 @@ export function compactPaths(paths, options = {}) {
     groups.set(label, (groups.get(label) || 0) + 1);
   }
   const rows = [...groups].sort(([a], [b]) => pathOrder(a.replace(/\/$/, ''), b.replace(/\/$/, '')));
-  const lines = [paths.length + ' 文件'], selected = displayPage(rows, options, lines);
+  const lines = [paths.length + ' 文件 · 全部覆盖' + (Number.isFinite(depth) ? ' · 目录深度 ' + depth : '')];
   let dir;
-  for (const [label, count] of selected) {
+  for (const [label, count] of rows) {
     const clean = label.replace(/\/$/, ''), current = path.posix.dirname(clean);
     if (dir !== current) { dir = current; lines.push(safe(dir) + '/'); }
     lines.push('  ' + safe(path.posix.basename(clean)) + (label.endsWith('/') ? '/ [' + count + ' 文件]' : ''));
@@ -147,44 +154,56 @@ export function compactPaths(paths, options = {}) {
   return lines.join('\n');
 }
 export function compactSymbols(data, options = {}) {
-  const kinds = options.kind?.split(','), rows = [];
-  for (const file of data.files) {
-    const symbols = file.symbols.filter(s => (!kinds || kinds.includes(s.kind))
-      && (!options.name || qualified(s.scope, s.name).toLowerCase().includes(options.name.toLowerCase())));
-    if (symbols.length) for (const symbol of symbols) rows.push({ file, symbol });
-    else if (!options.kind && !options.name) rows.push({ file });
-  }
+  const selected = selectSymbols(data, options);
+  const detail = options.detail || 'signatures';
+  if (!['names', 'signatures'].includes(detail)) throw new Error('detail 只能是 names 或 signatures。');
   const lines = ['根 ' + data.root + ' · 读取 ' + data.readAt];
-  const selected = displayPage(rows, options, lines), width = options.width ?? 200;
-  let dir, filename, scope = '', shortened = 0;
-  for (const { file, symbol } of selected) {
+  const queries = ['path', 'kind', 'name', 'scope', 'imports', 'text'].filter(k => options[k]);
+  if (queries.length) lines.push('检索 ' + queries.map(k => k + '=' + safe(options[k])).join(' · '));
+  lines.push(selected.files.length + ' 文件 · '
+    + selected.files.reduce((n, f) => n + f.symbols.length, 0) + ' 声明 · '
+    + (detail === 'names' ? '完整名称' : '完整签名') + ' · 全部展示');
+  let dir;
+  for (const file of selected.files) {
     const current = path.posix.dirname(file.path);
     if (dir !== current) { dir = current; lines.push(safe(dir) + '/'); }
-    if (filename !== file.path) {
-      filename = file.path; scope = '';
-      lines.push('  ' + safe(path.posix.basename(file.path)) + (file.problem ? ' [' + file.problem + ']' : ''));
-      for (const d of file.diagnostics || []) lines.push('    ! ' + d.line + ' ' + d.message);
-      if (options.deps && file.imports?.length) lines.push('    → ' + file.imports.join(' | '));
+    lines.push('  ' + safe(path.posix.basename(file.path)) + (file.problem ? ' [' + file.problem + ']' : ''));
+    for (const d of file.diagnostics || []) lines.push('    ! ' + d.line + ' ' + d.message);
+    if ((options.deps || options.imports) && file.imports?.length) lines.push('    → ' + file.imports.join(' | '));
+    if (detail === 'names') {
+      const scopes = new Map();
+      for (const symbol of file.symbols) {
+        const kinds = scopes.get(symbol.scope) || new Map();
+        const names = kinds.get(symbol.kind) || [];
+        names.push((symbol.exported ? '+' : '') + safe(symbol.name) + '@' + symbol.line);
+        kinds.set(symbol.kind, names); scopes.set(symbol.scope, kinds);
+      }
+      for (const [scope, kinds] of scopes) {
+        if (scope) lines.push('    [' + scope + ']');
+        for (const [kind, names] of kinds) lines.push((scope ? '      ' : '    ') + (shortKind[kind] || kind) + ' ' + names.join(' · '));
+      }
+    } else {
+      let scope = '';
+      for (const symbol of file.symbols) {
+        if (symbol.scope && symbol.scope !== scope) lines.push('    [' + symbol.scope + ']');
+        scope = symbol.scope;
+        const declaration = symbol.declaration.replace(/\r?\n[\t ]*/g, ' ').trim();
+        const hasKind = /^(?:(?:export|default|declare|abstract|async)\s+)*(?:class|interface|type|enum|namespace|function)\b/.test(declaration);
+        const prefix = hasKind || (scope && ['property', 'method', 'enum-member'].includes(symbol.kind)) ? '' : (shortKind[symbol.kind] || symbol.kind) + ' ';
+        const exported = symbol.exported && !/^export\b/.test(declaration) ? 'export ' : '';
+        lines.push((scope ? '      ' : '    ') + symbol.line + ' ' + exported + prefix + declaration);
+        if (['class', 'interface', 'namespace', 'enum'].includes(symbol.kind)) scope = qualified(symbol.scope, symbol.name);
+      }
     }
-    if (!symbol) continue;
-    if (symbol.scope && symbol.scope !== scope) lines.push('    [' + symbol.scope + ']');
-    scope = symbol.scope;
-    let declaration = symbol.declaration.replace(/\r?\n[\t ]*/g, ' ').trim();
-    if (width && declaration.length > width) { declaration = declaration.slice(0, width) + '…'; shortened++; }
-    const hasKind = /^(?:(?:export|default|declare|abstract|async)\s+)*(?:class|interface|type|enum|namespace|function)\b/.test(declaration);
-    const prefix = hasKind || (scope && ['property', 'method', 'enum-member'].includes(symbol.kind)) ? '' : (shortKind[symbol.kind] || symbol.kind) + ' ';
-    const exported = symbol.exported && !/^export\b/.test(declaration) ? 'export ' : '';
-    lines.push((scope ? '      ' : '    ') + symbol.line + ' ' + exported + prefix + declaration);
-    if (['class', 'interface', 'namespace', 'enum'].includes(symbol.kind)) scope = qualified(symbol.scope, symbol.name);
   }
-  if (shortened) lines.push(shortened + ' 条展示缩短；数据保留全文，用 --width 0 展开。');
+  if (detail === 'names') lines.push('+ 表示显式导出，@ 后是源码行号。');
   return lines.join('\n');
 }
-export function compactChanges(data, options = {}) {
+export function compactChanges(data) {
   const lines = ['根 ' + data.root + ' · HEAD ' + data.head + ' · ' + data.since + ' → 工作区（含暂存，? 为未跟踪）'];
-  const selected = displayPage(data.changes, options, lines);
+  lines.push(data.changes.length + ' 个变化 · 全部展示');
   let dir;
-  for (const row of selected) {
+  for (const row of data.changes) {
     const current = path.posix.dirname(row.path);
     if (dir !== current) { dir = current; lines.push(safe(dir) + '/'); }
     lines.push('  ' + row.status + ' ' + safe(path.posix.basename(row.path)) + (row.from ? ' ← ' + safe(row.from) : ''));
@@ -194,19 +213,18 @@ export function compactChanges(data, options = {}) {
 
 function main() {
   const { values: options, positionals } = parseArgs({ allowPositionals: true, options: {
-    ...Object.fromEntries(['out', 'input', 'path', 'depth', 'limit', 'offset', 'width', 'kind', 'name', 'since', 'typescript'].map(k => [k, { type: 'string' }])),
-    exclude: { type: 'string', multiple: true }, all: { type: 'boolean' }, deps: { type: 'boolean' },
+    ...Object.fromEntries(['out', 'input', 'path', 'depth', 'detail', 'kind', 'name', 'scope', 'imports', 'text', 'since', 'typescript'].map(k => [k, { type: 'string' }])),
+    exclude: { type: 'string', multiple: true }, deps: { type: 'boolean' },
     json: { type: 'boolean' }, stdin: { type: 'boolean' }, help: { type: 'boolean' },
   } });
-  for (const key of ['depth', 'limit', 'offset', 'width']) if (options[key] !== undefined) {
-    const n = Number(options[key]), minimum = ['width', 'offset'].includes(key) ? 0 : 1;
-    if (!Number.isSafeInteger(n) || n < minimum) throw new Error(key + ' 必须是 >= ' + minimum + ' 的整数');
-    options[key] = n;
+  if (options.depth !== undefined) {
+    const n = Number(options.depth);
+    if (!Number.isSafeInteger(n) || n < 1) throw new Error('depth 必须是 >= 1 的整数');
+    options.depth = n;
   }
-  if (options.all) options.limit = Infinity;
   const [command, target, ...paths] = positionals;
   if (!command || command === 'help' || options.help) {
-    console.log('project.mjs files ROOT [--path DIR] [--depth 2] [--exclude GLOB]\nproject.mjs symbols ROOT [FILE_OR_DIR...] [--input FILE|--stdin] [--typescript FILE]\nproject.mjs changes ROOT [--since REF] [--path DIR]\nproject.mjs render paths|symbols|changes --input FILE|--stdin\n数据：--json 输出可组合数据，--out FILE 另存完整数据；默认只输出紧凑文本。\n展示：--limit 80 --offset 0 --all --width 200 --kind class,interface,type,function,method --name TEXT --deps\n也可 import {listFiles, readSymbols, gitChanges, compactPaths, compactSymbols, compactChanges}，自行选取、变换和组合。\n文件枚举尊重 ignore，默认仅额外排除 .git/node_modules/.trash。索引不是全文阅读或业务验收；没有自动扫描、缓存或审查流程。');
+    console.log('project.mjs files ROOT [--path DIR] [--depth 2] [--exclude GLOB]\nproject.mjs symbols ROOT [FILE_OR_DIR...] [--input FILE|--stdin] [--typescript FILE]\nproject.mjs changes ROOT [--since REF] [--path DIR]\nproject.mjs render paths|symbols|changes --input FILE|--stdin\n数据：--json 输出可组合数据，--out FILE 另存数据；默认输出紧凑文本。\n展示全部选定范围：--detail names|signatures（默认 signatures），--deps；不分页、不截短签名。\n声明检索：--path DIR|FILE --name TEXT --kind class,interface,type,function,method --scope TEXT --imports MODULE --text TEXT\n可导入 listFiles、readSymbols、selectSymbols、gitChanges、compactPaths、compactSymbols、compactChanges 自行组合。\n文件枚举尊重 ignore，额外排除 .git/node_modules/.trash。索引不是全文阅读或业务验收；没有自动扫描、缓存或审查流程。');
     return;
   }
   if (options.input && options.stdin) throw new Error('--input 与 --stdin 二选一。');
@@ -226,6 +244,9 @@ function main() {
     if (!format || (!options.input && !options.stdin)) throw new Error('render 需要数据类型及 --input 或 --stdin。');
     data = input();
   } else throw new Error('未知命令；运行 help 查看。');
+  if (format === compactSymbols) data = selectSymbols(data, options);
+  else if (format === compactPaths) data = data.filter(name => matches(name, options.path));
+  else if (format === compactChanges) data = { ...data, changes: data.changes.filter(change => matches(change.path, options.path)) };
   if (options.out) {
     const out = path.resolve(options.out);
     fs.mkdirSync(path.dirname(out), { recursive: true });
