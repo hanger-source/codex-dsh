@@ -70,16 +70,33 @@ node "$HOME/.agents/skills/codex-dsh/scripts/dsh.mjs" doctor
 
 DSH 连接凭据在运行时从本机启动信息取得，仅用于本机连接，不写入绑定文件。仓库不包含任何用户会话、日志、模型凭据或工作区内容。协作消息也不代表新增的人类授权；发布、外发和其他需要授权的操作仍遵守原任务边界。
 
+## 可组合的工程观察
+
+Skill 还提供文件枚举、声明提取、Git 差异和紧凑展示函数，供 Agent 单独调用或导入自己的 JavaScript。Agent 自己选择范围、变换数据和组织判断，工具不规定审查流程。
+
+```sh
+P="$HOME/.agents/skills/codex-dsh/scripts/project.mjs"
+node "$P" files /absolute/project --depth 2
+node "$P" symbols /absolute/project src --kind class,interface,type,function
+node "$P" changes /absolute/project --since main
+```
+
+默认输出合并目录和作用域后的文本；JSON 用于管道或保存中间结果，避免把重复字段和路径灌入模型。TS 声明由项目的 TypeScript 编译器提取，其他常见语言复用 Universal Ctags。文件枚举使用 ripgrep；仅调用差异与展示函数无需解析器。详见 [组合示例与边界](skills/codex-dsh/references/project-tools.md)。
+
 ## 仓库结构
 
 ```text
 skills/codex-dsh/
 ├── SKILL.md                    # 使用与协作规则
 ├── agents/openai.yaml          # Codex Skill 元数据
-├── scripts/dsh.mjs             # 原生会话操作与双向投递
+├── scripts/
+│   ├── dsh.mjs                 # 原生会话操作与双向投递
+│   ├── project.mjs             # 可独立组合的工程观察与展示函数
+│   └── typescript-outline.mjs  # TypeScript 原生语法提取
 └── references/
     ├── dsh-brief.md            # 交给 DSH 主控的协作约定
-    └── native-link.md          # 接口、状态及诊断说明
+    ├── native-link.md          # 接口、状态及诊断说明
+    └── project-tools.md        # 工程观察组合示例
 ```
 
 ## License
