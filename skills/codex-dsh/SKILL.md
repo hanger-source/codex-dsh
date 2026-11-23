@@ -11,7 +11,7 @@ description: "组织 Codex 与 DSH 的省 token 协作：Codex 把握结构和�
 
 本模式要求真正的异步双向通信：Codex 派活后可以结束当前轮次，用户继续和它讨论；DSH 在阶段节点主动把汇报或问题送进同一 Codex 会话，Codex 空闲时也能被唤醒，判断再回到原 DSH 主会话。不得要求 Codex 挂着 `wait`、轮询或保持一轮不结束来冒充此能力。
 
-`send` 通过 DSH 原生 Session 队列进入固定主会话；DSH 使用 `report` 调用桌面配套 CLI 的 `codex queue`，进入原 Codex 会话并接续下一轮。等待期间不用模型轮询，也没有本 Skill 的常驻进程。保持两端应用和会话可用，使用当前真实线程 UUID，不按工作区猜接收者。
+`send` 默认通过 DSH 原生 Session 的 `steer` 插话进入固定主会话，在下一步读取指导；DSH 使用 `report` 调用桌面配套 CLI 的 `codex queue`，进入原 Codex 会话并接续下一轮。等待期间不用模型轮询，也没有本 Skill 的常驻进程。保持两端应用和会话可用，使用当前真实线程 UUID，不按工作区猜接收者。
 
 已在 [接口与运行说明](references/native-link.md) 所列环境中验证：结束 Codex 轮次后，DSH 主动投递能在同一 Codex 会话触发新一轮，并保留 DSH 前文记忆。已经验证过的环境中，新任务核对能力和双方身份即可，不为每个任务重复握手消耗模型；首次安装到另一台机器、更换宿主或通信实现时再验证受影响链路。入队成功与模型实际处理仍须分开。
 
@@ -63,7 +63,7 @@ node "$DSH_LINK" send --file /absolute/task-brief.md
 node "$DSH_LINK" report --thread CODEX_UUID --session DSH_SESSION_ID --file /absolute/report.md
 ```
 
-`send` 投递到同一个 DSH 主会话的原生队列，不打断正在进行的一轮。`accepted` 只证明收件，不证明做完。请求返回不确定时先检查状态；原生 `requestId` 支持同一请求去重，不能换 ID 盲发同一任务。
+`send` 默认为原生 `steer`：让 DSH 在下一步读取指导，不等整轮工作结束，也不取消正在执行的操作。明确要留到下一轮的新任务才使用 `--mode queue`。`accepted` 只证明收件，不证明模型已经采用或做完。请求返回不确定时先检查状态；原生 `requestId` 支持同一请求去重，不能换 ID 盲发同一任务。已经排队的同一消息不能靠重新发送来切换模式，按接口说明提升原队列项。
 
 派活后不等待 DSH 结束。只有阶段成果、方向变化、需要决策或真实异常才由 DSH 主动 `report`；普通进度不逐条唤醒 Ultra。DSH 可以结束一轮等待反馈，也可以继续不依赖反馈的工作。不要自动对每条消息回执，避免双方空转。两边消息标明来自协作方，不能冒充用户的新授权；用户输入仍由用户直接提供。
 

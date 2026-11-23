@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const stateRoot = process.env.CODEX_DSH_STATE_DIR || path.join(home, '.local/state/codex-dsh');
-const optionNames = ['thread', 'workspace', 'session', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex'];
+const optionNames = ['thread', 'workspace', 'session', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex', 'mode'];
 const execFileAsync = promisify(execFile);
 const desktopCodex = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex';
 
@@ -147,7 +147,7 @@ async function main() {
       start: '创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
       attach: '绑定已有主会话并开启 Team；必须 --session ID --workspace PATH',
       status: '当前绑定与 DSH 原生状态',
-      send: '--file PATH 或 --text TEXT；默认排队，不中断正在工作的一轮',
+      send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
       read: '立即读取增量答复；--after SEQ --max-messages N --max-chars N 可扩大窗口',
@@ -214,13 +214,15 @@ async function main() {
       output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, modelSelection: projections?.values?.modelSelection });
     } else if (command === 'send') {
       const text = await inputText(options);
+      const mode = options.mode || 'steer';
+      if (!['steer', 'queue'].includes(mode)) throw new Error('mode 只能是 steer 或 queue。');
       const requestId = options['request-id'] || randomUUID();
-      binding.lastRequest = { requestId, accepted: false, at: new Date().toISOString() };
+      binding.lastRequest = { requestId, mode, accepted: false, at: new Date().toISOString() };
       await saveBinding(options, binding);
-      await client.rpc('session/prompt', { request: { sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }], clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
+      await client.rpc('session/prompt', { request: { sessionId, requestId, mode, content: [{ type: 'text', text }], clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone } });
       binding.lastRequest.accepted = true;
       await saveBinding(options, binding);
-      output({ sessionId, requestId, accepted: true });
+      output({ sessionId, requestId, mode, accepted: true });
     } else {
       const afterSeq = options.after === undefined ? binding.afterSeq : Number(options.after);
       if (!Number.isSafeInteger(afterSeq) || afterSeq < -1) throw new Error('after 必须为 >= -1 的整数。');

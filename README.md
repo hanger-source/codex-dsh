@@ -32,7 +32,7 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 
 ```text
 用户 ⇄ Codex 原会话
-          │ send：DSH 原生 Session 队列
+          │ send：DSH 原生 Session 插话（steer）
           ▼
        DSH 原主会话 ⇄ 它的 Agent Team
           │ report：codex queue
@@ -40,8 +40,9 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 ```
 
 - Codex 派活后可以结束当前轮次，不需要挂着等待。
+- Codex 发给 DSH 的指导默认插话发送，DSH 在下一步读取，不必等整轮结束；明确要留到下一轮的任务可用 `send --mode queue`。
 - DSH 在有阶段成果、方向性问题或需要讨论的关键决策时主动汇报。
-- 汇报进入原 Codex 会话队列，由原会话继续处理。正在执行时不强行打断；队列接受不等于模型已处理。
+- DSH 的汇报进入原 Codex 会话队列，由原会话继续处理。正在执行时不强行打断；队列接受不等于模型已处理。
 - Codex 的反馈进入原 DSH 会话，双方保留各自上下文。普通回执不触发反复互发消息。
 
 只使用两端原生会话机制，没有额外常驻消息服务、模型轮询或一次性的 Codex 执行器。代码参考了 [Wake Codex 的原生队列用法](https://github.com/rotcev/wake-codex)，无需安装它的监听服务。
