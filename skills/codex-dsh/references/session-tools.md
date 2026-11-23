@@ -2,11 +2,13 @@
 
 统一从 `scripts/sdk.mjs` 导入。SDK 不解析命令行、不打印查询结果、不读取会话历史或自动发消息；只有显式调用才执行对应操作。连接与查询、投递独立，复用一次连接即可用普通 JavaScript 自由筛选、关联和并行。`scripts/dsh.mjs` 只是可选 CLI 封装，`status` 是一种组合视图。
 
+Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `import('C:\\...')`。官方 Desktop 的入口与自建 Web 壳不同，首次连接先看 [安装形态与 Windows 说明](native-link.md)，不扫描 AppData 或寻找 Homebrew 依赖。
+
 目标是减少 Codex 的 token 消耗和协作摩擦：原始返回留在程序内，向模型只输出影响当前判断的信息；已知数据可以复用，不为每个筛选重新启动命令和查询。遇到疑点仍读取关键正文与真实实现，不能把少输出误当成可以遗漏证据。
 
 | 函数 | 作用与返回边界 |
 | --- | --- |
-| `connectDsh({logPath?, urlFile?, dshPackage?, expectedEndpoint?})` | 建立本机连接，返回 client；可核对已有绑定 endpoint。调用方在 finally 中 close，不重启服务，不创建 Agent。 |
+| `connectDsh({logPath?, urlFile?, expectedEndpoint?})` | 建立本机连接，返回 client；可核对已有绑定 endpoint。使用 Node 内置 WebSocket，无需指定 DSH 安装目录。调用方在 finally 中 close，不重启服务，不创建 Agent。 |
 | `readBinding({thread?, stateDir?})` | 只读当前或明确指定的 Codex 绑定。省略 thread 时使用 CODEX_THREAD_ID；没有绑定就报错，不猜其它会话。 |
 | `listSessions(client)` | 原生会话列表，含父子关系及投影；数据可能较大，先在代码或管道中选材再交模型。 |
 | `listAgents(client, rootSessionId, {recursive?, sessions?})` | 子树目录及运行快照。默认递归，返回路径、父 ID、名称、标签、模式、运行状态、更新时间及 `catalogAvailable`。可复用已经取得的 sessions；目录记录缺少会话状态时 `running:null`，子目录不可读时保留该行并以 `catalogAvailable:false` 表达，不能据此断言没有后代。 |

@@ -1,16 +1,63 @@
 # 原生会话连接
 
-已验证环境为 macOS、DSH `0.2.2-rc.5` 与桌面配套 Codex CLI `0.171.0-alpha.13`。DSH 侧复用原生 Remote 协议的 Session 与 Agent Teams；Codex 侧复用原生 `queue`。不使用 `subagent_codex`：那个插件每次新建一次性 Codex，不保留本模式所需的用户主会话关系。
+DSH 侧复用原生 Remote 协议的 Session 与 Agent Teams；Codex 侧复用原生 `queue`。客户端用 Node.js 22.22.3 或 24+ 的内置 WebSocket，不依赖 DSH 的 npm/Homebrew 安装，不需要 `--dsh-package`。不使用 `subagent_codex`：那个插件每次新建一次性 Codex，不保留本模式所需的用户主会话关系。
 
 ## 连接与权限
 
-默认读取本机 `~/.dsh/runtime/dsh-desktop/server.log` 的最后一个 `dsh web:` 启动地址，用原生 `/connect?interactions=none` 换取 API Peer Cookie，并保持原生 WebSocket 的连接生命周期。凭据只在当前脚本内存里使用，不打印、不写进绑定文件、不传给模型。只接受回环地址。
+使用原生 `/connect?interactions=none` 换取 API Peer Cookie，并保持原生 WebSocket 的连接生命周期。只接受回环 HTTP(S) 地址，凭据不打印、不写进绑定文件、不传给模型。
 
-`--log` 可以指定对应 DSH 启动日志；`--url-file` 可以指定仅包含本次启动 URL 的本机文件。不要把含 token 的 URL 贴入会话或命令参数。`--dsh-package` 或 `CODEX_DSH_PACKAGE` 指定实际 DSH 安装的 `package.json`；默认是本机 Homebrew 全局安装路径，复用随 DSH 安装的 `ws`，不额外安装依赖。
+入口由 `--url-file` / `CODEX_DSH_URL_FILE` 或 `--log` / `CODEX_DSH_LOG` 指定，两类不要同时设置。地址文件仅含本次启动 URL，支持 UTF-8、UTF-8 BOM、PowerShell 5 默认的 UTF-16LE、CRLF。日志取最后一条 `dsh web:` 地址；显式路径失败不会改连其它安装。
 
-DSH 未运行时，可用本机原生入口 `open -a DSH` 启动，再执行 `doctor`。已有 DSH 正在运行但鉴权或 API 报错时，检查当前地址、版本和错误，不为了本 Skill 重启它或改全局权限。默认会话沿用 DSH 已配置的模型，不冒充设置了 DeepSeek 的某个档位。
+未指定入口时，只检查 `$DSH_HOME/runtime/codex-dsh/desktop.url`（下述插件发布）与 `$DSH_HOME/runtime/dsh-desktop/server.log`（自建 Web 壳日志）。`DSH_HOME` 未设时用用户目录下 `.dsh`，不猜 `%APPDATA%` 包目录。两者同时存在时须明确选一个；已有绑定可用 expectedEndpoint 区分，不能按新旧时间改接会话。
+
+DSH 未运行时，通过它实际安装的桌面入口启动。macOS 的 `open -a DSH` 只适用于确实名为 DSH 的自建 App，不是 Windows 或官方 Desktop 的通用命令。已有服务正在运行但鉴权或 API 报错时，检查当前入口和版本，不重启任务、不另启 Web 服务承接原会话、不改全局权限。默认会话沿用 DSH 已配置的模型。
 
 连接使用 `interactions=none`，不会冒领 DSH 原生审批或自动回答人工问题。遇到 `input-required`，通过 DSH 界面查看实际提问或审批；如果用户的决定已明确且原生接口能表达，再按对应权限操作，不能把普通 prompt 当成审批结果。
+
+## 官方 Desktop
+
+官方 Desktop 的父进程通过私有 IPC 向 Host 交付鉴权凭据，不保证存在 `dsh web:` 启动日志；不能读取 Electron Cookie 数据库或把它的私有凭据当成公开接入协议。官方 [Token Provider](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/host/authentication-token/README.md) 明确支持与 [Desktop Provider](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/host/authentication-desktop/README.md) 同时装配。
+
+本 Skill 的 `assets/desktop-plugin/` 是可选的普通 Cordis bundle：在现有、仅绑定回环地址的 Host 内装配官方 Token Provider，再通过原生 `webserver/entry-url` 取得连接地址，写入 `$DSH_HOME/runtime/codex-dsh/desktop.url`。不创建服务器、Agent 或 Session，不读取 Desktop 的私有 Cookie。API Peer、鉴权、连接关闭和撤销都由官方组件负责；插件卸载清理自己发布的地址文件，Desktop 原来的私有连接继续工作。
+
+该文件含有本机 owner 级接入凭据：POSIX 目录/文件分别以 0700/0600 创建；Windows 继承用户目录的 ACL，Node 的 mode 不等于配置 Windows ACL。因此 DSH_HOME 必须处于用户私有目录，不能置于共享目录。文件不提交 Git、不输出正文。进程崩溃可能留下过期文件，连接失败须核对 Desktop 当前运行状态，不凭此创建新实例。
+
+**版本条件**：插件使用 `host-authentication-token` 和 `Context.root` API，须由 Desktop 自己提供相匹配的组件；当前组件试验组合是 DSH `0.2.3-alpha.1` + Cordis `4.2.0-alpha.1`。该 Token 包的 npm peer 声明仍为 Cordis `~4.1.0`，实际代码却使用 4.2 的符号 API。仓库测试对 Cordis 作了显式依赖锁定，证明这组实际代码的行为；这不证明任意已发行 Desktop 都能直接安装。安装检查若拒绝，保留具体版本差异，不能在用户 Desktop 里 force 安装、豁免检查或单独替换 Cordis。较旧 Desktop 缺少这些原生能力时，需匹配的官方发行版本；不能只改路径就宣称支持。
+
+通过官方 Desktop 的插件管理安装本地 bundle。若使用 CLI，先从 Desktop 自带的命令安装入口确认 `dsh` 属于这个 Desktop；不要拿 npm 的独立 dsh 操作它的专属 profile。官方 CLI 管理 Desktop 插件要求先初始化 profile、完全退出应用，安装后重开；正在执行任务时不要擅自退出。参考 [官方命令说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/desktop/README.md#bundled-command-runtime)。
+
+Windows PowerShell，在已核对上述版本并安排好退出后：
+
+```powershell
+$Skill = Join-Path $HOME '.agents/skills/codex-dsh'
+Get-Command dsh -All | Select-Object Source
+dsh plugin --profile desktop add (Join-Path $Skill 'assets/desktop-plugin')
+# 重新打开原官方 Desktop，然后只读检查。
+node (Join-Path $Skill 'scripts/dsh.mjs') doctor --codex 'C:\实际桌面配套目录\codex.exe'
+```
+
+POSIX 对应安装参数是 `dsh plugin --profile desktop add "$HOME/.agents/skills/codex-dsh/assets/desktop-plugin"`。不把此命令作为每次连接的前置步骤；已装配后直接连接。doctor 确认 `sessionApi` 后，再查原主会话、核对真实 cwd，按既有 attach 规则接入。
+
+## Windows 的 Codex 与 SDK
+
+`Get-Command codex -All | Select-Object Source` 只用于定位。客户端只接收可执行二进制（Windows 为 codex.exe），以参数数组传递中文、多行、引号和 shell 符号，不经过 PowerShell/cmd 求值。PATH 里的 npm cmd 包装器不等于桌面配套 CLI。用 `--codex` 或 `CODEX_DSH_CODEX` 指定绝对路径；检查 queue 能力后将实际路径固化进绑定，不将 `exec resume` 当成替代。
+
+Windows ESM 不接受裸盘符路径作为模块 URL。跨平台导入：
+
+```js
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const file = path.join(os.homedir(), '.agents', 'skills', 'codex-dsh', 'scripts', 'sdk.mjs');
+const sdk = await import(pathToFileURL(file).href);
+```
+
+### 验证范围
+
+- macOS 的已有 Web 型 DSH `0.2.2-rc.5`：Node 22.22.3 原生连接、只读 Session API、桌面配套 Codex CLI `0.171.0-alpha.13` 的 queue 能力检查通过。
+- 官方组件隔离试验：真实 Cordis、WebServer、Connection、Desktop/Token 双 Provider，验证私有连接与 API Peer 并存、Cookie 随 WebSocket 实际传递、断开后拒绝旧 Cookie、卸载后撤销并清理地址。仅 mux 业务负载使用测试载体，未启动真实 Agent。
+- UTF-16/BOM/CRLF、中文空格路径、CLI 入口与原样传参已在 macOS 验证；`.github/workflows/compatibility.yml` 在 Windows/macOS/Linux 运行同组测试。提交 workflow 不等于 CI 已执行。
+- Windows 真机官方 Desktop 安装、真实原会话接入和 Codex queue 唤醒尚未验证。首次目标机接入仍需验证这些边界，不能用组件试验或 HTTP 成功代替。
 
 ## 命令
 
@@ -45,9 +92,8 @@ Codex 侧默认绑定当前 `CODEX_THREAD_ID`，创建绑定必须是实际 UUID
 
 `report` 不连接 DSH、不等模型回复，只读取已绑定的目标，执行：
 
-```sh
-/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex \
-  queue --thread CODEX_UUID --message '协作汇报'
+```js
+execFile(binding.codexExecutable, ['queue', '--thread', binding.codexThreadId, '--message', text]);
 ```
 
 脚本使用参数数组调用 CLI，消息不经 shell 求值。返回 `queueAccepted` 只表示命令接受投递，不代表 Codex 已决策；超时或不确定错误不能盲目重发。此命令未提供本 Skill 可用的 requestId 去重参数，因此不额外声称恰好一次投递。DSH 需要反馈时由 Codex `send` 回同一原生 Session，普通汇报无需逐条确认。

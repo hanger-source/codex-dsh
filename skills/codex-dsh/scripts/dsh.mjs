@@ -6,18 +6,19 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { decodeText } from './environment.mjs';
 import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
 import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const stateRoot = process.env.CODEX_DSH_STATE_DIR || path.join(home, '.local/state/codex-dsh');
-const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'dsh-package', 'codex', 'mode'];
+const optionNames = ['thread', 'workspace', 'session', 'agent', 'keys', 'before', 'through', 'detail', 'title', 'file', 'text', 'request-id', 'seconds', 'after', 'max-messages', 'max-chars', 'log', 'url-file', 'codex', 'mode'];
 
 
 async function inputText(options) {
   if (Boolean(options.file) === Boolean(options.text)) throw new Error('消息需要且只能指定 --file 或 --text。');
-  const text = options.file ? await fs.readFile(options.file, 'utf8') : options.text;
+  const text = options.file ? decodeText(await fs.readFile(options.file)) : options.text;
   if (!text.trim()) throw new Error('消息不能为空。');
   return text;
 }
@@ -44,7 +45,7 @@ async function requireRoot(client, sessionId, workspace) {
   const item = (await allSessions(client)).find(x => x.sessionId === sessionId);
   if (!item) throw new Error(`找不到 DSH 会话 ${sessionId}`);
   if (item.parentSessionId || item.origin === 'subagent') throw new Error('只能接入 DSH 主会话，不能接管其子 Agent。');
-  if (!item.cwd || await fs.realpath(item.cwd) !== workspace) throw new Error('DSH 会话工作区不匹配；请明确使用该会话实际工作区。');
+  if (!item.cwd || path.relative(await fs.realpath(item.cwd), workspace) !== '') throw new Error('DSH 会话工作区不匹配；请明确使用该会话实际工作区。');
   return item;
 }
 async function ensureUnbound(options, sessionId) {
@@ -116,7 +117,7 @@ async function main() {
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
       wait: '原生等待阶段结束或人工输入，--seconds 1..55，增量读取，不启动模型',
       read: '立即读取增量答复；--after SEQ --max-messages N --max-chars N 可扩大窗口',
-    }, connection: '--log 当前 DSH 启动日志，或 --url-file 本机启动地址文件；--dsh-package 安装 package.json 路径；--codex 桌面配套CLI绝对路径', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
+    }, connection: '官方 Desktop 接入插件自动提供入口；Web 使用 --log 或 --url-file；--codex 桌面配套 CLI 绝对路径（Windows 为 codex.exe）。需要 Node.js 22.22.3 或 24+，不依赖 DSH 安装目录。', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
     return;
   }
   const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'send-agent'];
@@ -132,7 +133,7 @@ async function main() {
     output({ codexThreadId: binding.codexThreadId, sessionId: binding.sessionId, queueAccepted: true, receipt: receipt.receipt, meaning: '已入 Codex 原生队列；不代表模型已处理。不等待、不自动重发。' });
     return;
   }
-  const client = new DshClient({ logPath: options.log, urlFile: options['url-file'], dshPackage: options['dsh-package'] });
+  const client = new DshClient({ logPath: options.log, urlFile: options['url-file'] });
   try {
     await client.connect();
     if (atomicCommands.includes(command)) {
@@ -142,12 +143,12 @@ async function main() {
     if (command === 'doctor') {
       const page = await client.rpc('session/list', { _request: {} });
       const codex = await inspectCodex(options);
-      output({ dshConnected: true, transport: 'DSH native Remote HTTP + API Peer WebSocket', endpoint: client.base, sessionApi: Array.isArray(page.items), codex, transportsAvailable: true, meaning: '这是能力检查，不调用模型；当前会话实际接收以入站消息为准。' });
+      output({ dshConnected: true, transport: 'DSH native Remote HTTP + API Peer WebSocket', endpoint: client.base, connectionSource: client.connectionSource, platform: process.platform, node: process.versions.node, sessionApi: Array.isArray(page.items), codex, transportsAvailable: true, meaning: '这是能力检查，不调用模型；当前会话实际接收以入站消息为准。' });
       return;
     }
     if (command === 'sessions') {
       const workspace = options.workspace && await fs.realpath(options.workspace);
-      const items = (await allSessions(client)).filter(x => !x.parentSessionId && x.origin !== 'subagent' && (!workspace || x.cwd === workspace));
+      const items = (await allSessions(client)).filter(x => !x.parentSessionId && x.origin !== 'subagent' && (!workspace || (x.cwd && path.isAbsolute(x.cwd) && path.relative(x.cwd, workspace) === '')));
       output({ sessions: items.map(summary) });
       return;
     }
@@ -218,6 +219,6 @@ async function main() {
     }
   } finally { await client.close(); }
 }
-if (process.argv[1] && await fs.realpath(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.relative(await fs.realpath(process.argv[1]), await fs.realpath(fileURLToPath(import.meta.url))) === '') {
   main().catch(error => { process.stderr.write(JSON.stringify({ error: String(error.message).replace(/token=[^\s&]+/g, 'token=[redacted]') }) + '\n'); process.exitCode = 1; });
 }

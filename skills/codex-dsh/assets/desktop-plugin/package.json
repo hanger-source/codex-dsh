@@ -1,0 +1,15 @@
+{
+  "name": "codex-dsh-desktop",
+  "version": "0.1.0",
+  "description": "Expose the existing local DSH Desktop through its native token API for Codex collaboration.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": { ".": "./index.mjs", "./cordis.patch.yml": "./cordis.patch.yml", "./package.json": "./package.json" },
+  "files": ["index.mjs", "cordis.patch.yml"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.2.0-alpha.1 <5",
+    "@deepseek-ai/dsh-host-authentication-token": ">=0.2.3-alpha.1 <0.3.0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.3-alpha.1 <0.3.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "codex-dsh-checks",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.2.0-alpha.1",
+    "@deepseek-ai/dsh-client-connection": "0.2.3-alpha.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.3-alpha.1",
+    "@deepseek-ai/dsh-host-authentication-desktop": "0.2.3-alpha.1",
+    "@deepseek-ai/dsh-host-authentication-token": "0.2.3-alpha.1",
+    "@deepseek-ai/dsh-credentials-local": "0.2.3-alpha.1",
+    "@deepseek-ai/dsh-home-paths": "0.2.3-alpha.1",
+    "ws": "8.21.3"
+  },
+  "overrides": { "@deepseek-ai/cordis": "$@deepseek-ai/cordis" }
+}

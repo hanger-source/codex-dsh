@@ -49,11 +49,11 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 
 ## 运行条件
 
-已验证环境：macOS、Node.js 26、DSH `0.2.2-rc.5`、桌面配套 Codex CLI `0.171.0-alpha.13`。
+客户端需要 Node.js 22.22.3 或 24+，使用内置 HTTP/WebSocket；安装 Skill 后无需安装 npm 依赖，也不读取 DSH 的 node_modules。仓库的 npm 依赖只用于维护者运行测试。
 
 - 保持 DSH 桌面服务和持有目标线程的 Codex 桌面应用可用。
-- Codex CLI 必须支持 `queue --thread … --message …`。默认选择 ChatGPT 桌面内附的 CLI，PATH 中另一个版本可能没有此能力。
-- DSH 连接使用其原生 Remote HTTP / WebSocket API，复用随 DSH 安装的 `ws`。不是把 DeepSeek 模型替换进 Codex，也不要求另填模型 API Key。
+- Codex CLI 必须支持 `queue --thread … --message …`。优先使用显式指定的二进制；未指定时检查 macOS 桌面配套路径和 PATH，Windows 检查 PATH 中的 codex.exe。只有通过能力检查的路径才能进入绑定。
+- DSH 连接使用其原生 Remote HTTP / WebSocket API。Web 服务和官方 Desktop 的连接入口不同：Desktop 使用本 Skill 的可选原生插件接入。不是把 DeepSeek 模型替换进 Codex，也不要求另填模型 API Key。
 - 尚未验证关闭桌面应用后的离线消费、跨机器通信或云端线程。
 
 安装后可做不调用模型的接口检查：
@@ -62,7 +62,18 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 node "$HOME/.agents/skills/codex-dsh/scripts/dsh.mjs" doctor
 ```
 
-默认路径对应 macOS 的 ChatGPT 桌面与 Homebrew 全局安装的 DSH。其他安装位置应明确提供 `--codex`、`--dsh-package`；也可使用 `CODEX_DSH_CODEX`、`CODEX_DSH_PACKAGE`。DSH 启动地址可由 `--log` 或 `--url-file` 指定，后者应是本机保存地址的文件，不把含 token 的 URL 发给模型。具体见 [原生接口说明](skills/codex-dsh/references/native-link.md)。
+Windows PowerShell：
+
+```powershell
+$D = Join-Path $HOME '.agents/skills/codex-dsh/scripts/dsh.mjs'
+node $D doctor --codex 'C:\实际安装目录\codex.exe'
+```
+
+`--codex` 或 `CODEX_DSH_CODEX` 指定桌面配套 CLI，保留带空格的完整路径，不使用 cmd/bat 包装器。DSH 地址由 `--log` / `CODEX_DSH_LOG` 或 `--url-file` / `CODEX_DSH_URL_FILE` 指定，地址文件支持 PowerShell 的 UTF-16LE、UTF-8 BOM 和 CRLF；不要将含 token 的 URL 发进会话。SDK 在 Windows 中通过 `pathToFileURL(绝对路径)` 导入，不能直接 `import('C:\\...')`。
+
+**官方 DSH Desktop 不等于自建 DSH.app。** 官方 Desktop 默认使用私有 IPC 鉴权；找不到自建 App 的 server.log 是正常情况。可选 [Desktop 接入插件](skills/codex-dsh/references/native-link.md#官方-desktop) 在原 Host 内组合官方 Token Provider，供 SDK 连接同一服务与会话，不额外启动 Web Host。不依赖 AppData 或 Homebrew 安装位置。支持版本、安装及凭据边界见该说明。
+
+验证范围：macOS 的现有 DSH `0.2.2-rc.5` 只读连接与 Codex CLI `0.171.0-alpha.13` 能力检查成立；官方鉴权组件的隔离集成测试、Windows 编码和参数传递测试已在 macOS 通过。仓库提供 Windows/macOS/Linux CI；Windows 真机的官方 Desktop 安装及 Codex 会话唤醒尚需目标环境验证，不能由本机测试替代。
 
 ## 本地状态与权限
 
@@ -105,10 +116,12 @@ skills/codex-dsh/
 ├── agents/openai.yaml          # Codex Skill 元数据
 ├── scripts/
 │   ├── sdk.mjs                 # 公开 SDK 入口、连接、绑定读取与 Codex 投递
+│   ├── environment.mjs         # 连接入口、编码与 CLI 路径识别
 │   ├── dsh.mjs                 # 可选 CLI 封装
 │   ├── session.mjs             # 独立会话查询、子树发现与子 Agent 投递
 │   ├── project.mjs             # 可独立组合的工程观察与展示函数
 │   └── typescript-outline.mjs  # TypeScript 原生语法提取
+├── assets/desktop-plugin/      # 官方 Desktop 原生 Token 接入插件
 └── references/
     ├── dsh-brief.md            # 交给 DSH 主控的协作约定
     ├── native-link.md          # 接口、状态及诊断说明

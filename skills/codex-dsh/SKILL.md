@@ -9,6 +9,8 @@ description: "组织 Codex 与 DSH 的省 token 协作：Codex 把握结构和�
 
 ## 原生异步通信
 
+首次接入先分清 Web 服务／自建桌面壳与官方 DSH Desktop，按 [原生连接与 Windows 说明](references/native-link.md) 使用对应入口。官方 Desktop 默认私有 IPC，没有自建 App 的启动日志不代表未安装；不要猜 AppData 目录、要求 Homebrew 依赖或另起服务冒充接入原会话。客户端支持 Node 22.22.3 或 24+，官方 Desktop 插件另有原生组件版本条件。
+
 本模式要求真正的异步双向通信：Codex 派活后可以结束当前轮次，用户继续和它讨论；DSH 在阶段节点主动把汇报或问题送进同一 Codex 会话，Codex 空闲时也能被唤醒，判断再回到原 DSH 主会话。不得要求 Codex 挂着 `wait`、轮询或保持一轮不结束来冒充此能力。
 
 `send` 默认通过 DSH 原生 Session 的 `steer` 插话进入固定主会话，在下一步读取指导；DSH 使用 `report` 调用桌面配套 CLI 的 `codex queue`，进入原 Codex 会话并接续下一轮。等待期间不用模型轮询，也没有本 Skill 的常驻进程。保持两端应用和会话可用，使用当前真实线程 UUID，不按工作区猜接收者。
