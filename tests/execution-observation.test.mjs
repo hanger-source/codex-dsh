@@ -14,7 +14,7 @@ const nested = (seq, type, subCallId, name, args, content = []) => event(seq, ty
   rootCallId: 'code', parentCallId: 'code', subCallId, name, arguments: args, content, isError: false,
 });
 
-test('等待调用与返回按身份关联，保留时点和最近正文，排除流式及推理碎片', () => {
+test('等待调用与返回按身份关联，保留时点和最近正文，排除流式碎片', () => {
   const start = page([
     event(1, 'turn/start', { turn: 1 }),
     event(2, 'assistant/message', { message: { content: [{ type: 'text', text: '已提交，等待核验。' }] }, stream: '不重复交付' }),
@@ -28,10 +28,52 @@ test('等待调用与返回按身份关联，保留时点和最近正文，排�
   assert.deepEqual(JSON.parse(waiting.calls[0].input.text), { timeout_ms: 300000 });
   assert.equal(waiting.lastMessage.text.text, '已提交，等待核验。');
   assert.equal(waiting.lastEvent.seq, 3);
+  assert.equal(waiting.waiting[0].callId, 'wait-1');
   const finished = summarizeExecution(page([...start.records, result(5, 'wait-1', 3, '等待超时'), call(6, 'cmd-1', 'bash', { command: 'git status --short' })]));
   assert.equal(finished.calls[0].returned.output.text, '等待超时');
   assert.equal(finished.calls[1].returned, null);
   assert.equal(finished.calls[1].name, 'bash');
+  assert.deepEqual(finished.waiting, []);
+});
+
+test('等待带同轮前一步可见思考与前两次执行，前序上下文不被等待后事件改写', () => {
+  const records = [
+    event(1, 'turn/start', { turn: 1 }),
+    event(2, 'assistant/message', { message: { content: [{ type: 'text', text: '准备恢复入口。' }] } }),
+    call(3, 'inspect', 'bash', { description: '检查工作区' }), result(4, 'inspect', 3, 'clean'),
+    call(5, 'commit', 'bash', { description: '提交恢复入口' }), result(6, 'commit', 5, 'commit abc123'),
+    call(7, 'notify', 'send_message', { agent: 'app-data', message: '入口已提交 abc123。' }),
+    result(8, 'notify', 7, 'delivered'),
+    event(9, 'assistant/message', { message: { content: [
+      { type: 'reasoning', text: '已通知 app-data，等 host-v3 receipt。' },
+    ] } }),
+    call(10, 'wait', 'wait_agent', { timeout_ms: 300000 }),
+    event(11, 'assistant/chunk', { text: '不采用流式片段' }),
+    event(12, 'user/message', { content: [{ type: 'text', text: '之后收到的消息' }] }),
+  ];
+  const view = summarizeExecution(page(records));
+  const before = view.waiting[0].wait.before;
+  assert.equal(before.thought.seq, 9);
+  assert.equal(before.thought.text.text, '已通知 app-data，等 host-v3 receipt。');
+  assert.equal(before.statement.seq, 2);
+  assert.deepEqual(before.calls.map(c => c.callId), ['commit', 'notify']);
+  assert.equal(before.calls[0].returned.output.text, 'commit abc123');
+  assert.equal(before.calls[1].returned.output.text, 'delivered');
+  assert.equal(view.lastMessage.seq, 12);
+
+  const next = summarizeExecution(page([...records,
+    event(13, 'turn/end', { turn: 1 }), event(14, 'turn/start', { turn: 2 }),
+    call(15, 'wait-new', 'wait_agent', { timeout_ms: 300000 }, 2),
+  ]));
+  assert.deepEqual(next.waiting.map(c => c.callId), ['wait-new']);
+  assert.deepEqual(next.waiting[0].wait.before, { thought: null, statement: null, calls: [] });
+
+  const long = summarizeExecution(page([
+    event(1, 'assistant/message', { message: { content: [{ type: 'reasoning', text: '等待正式现场。'.repeat(100) }] } }),
+    call(2, 'wait', 'wait_agent', {}),
+  ]));
+  assert.equal(long.waiting[0].wait.before.thought.text.text.length, 300);
+  assert.equal(long.waiting[0].wait.before.thought.text.truncated, true);
 });
 
 test('run_code 内并发工具按原生 subCallId 配对，不根据源码文字猜等待', () => {
@@ -47,12 +89,20 @@ test('run_code 内并发工具按原生 subCallId 配对，不根据源码文字
   assert.equal(view.calls.find(c => c.callId === 'c1').returned.output.text, 'clean');
   assert.deepEqual(JSON.parse(view.calls.find(c => c.callId === 'j1').input.text), { job_id: 'job-A', wait: true, timeout_ms: 300000 });
   assert.equal(view.calls.find(c => c.callId === 'j1').parentCallId, 'code');
+  assert.equal(view.waiting[0].callId, 'j1');
+  assert.equal(view.waiting[0].wait.kind, 'job');
   view = summarizeExecution(page([...records, result(6, 'code', 2, '结束')]));
   // Missing nested return remains missing, but a returned parent is not an active wait.
   assert.equal(view.calls.find(c => c.callId === 'j1').returned, null);
   assert.equal(view.calls.find(c => c.callId === 'j1').closedBy.seq, 6);
+  assert.deepEqual(view.waiting, []);
   const opaque = summarizeExecution(page([call(8, 'opaque', 'run_code', { code: 'await tools.wait_agent({ timeout_ms: 300000 })' })]));
   assert.deepEqual(opaque.calls.map(c => c.name), ['run_code']);
+  assert.deepEqual(opaque.waiting, []);
+  const immediate = summarizeExecution(page([call(9, 'read', 'job_output', { job_id: 'job-A', wait: false })]));
+  assert.deepEqual(immediate.waiting, []);
+  const truncated = summarizeExecution(page([call(10, 'wait', 'job_output', { job_id: 'job-A', wait: true })]), { maxChars: 4 });
+  assert.equal(truncated.waiting[0].wait.kind, 'job');
 });
 
 test('终止旧轮的未返回调用不污染新轮；同名/复用 ID 按真实事件配对', () => {
@@ -86,6 +136,7 @@ test('分页缺开始、文本截断与非文本块均保留可追溯边界，�
 test('HTTP 读取保留子地址和原生队列，固定窗口，两次只读请求，无激活/重试/自动翻页', async () => {
   const calls = [];
   let cursor = 12;
+  let running = true;
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const chunk of req) body += chunk;
@@ -94,7 +145,7 @@ test('HTTP 读取保留子地址和原生队列，固定窗口，两次只读请
     const args = rpc.payload.args.request;
     let value;
     let error;
-    if (rpc.method === 'session/state') value = { cursor, active: true, running: true,
+    if (rpc.method === 'session/state') value = { cursor, active: true, running,
       queue: [{ id: 'queued', placement: 'steering' }], pendingInput: [{ id: 'approval' }] };
     else if (rpc.method === 'session/events' && args.address.parentSessionId === 'parent') {
       value = { ...page([call(11, 'wait', 'wait_agent', { timeout_ms: 300000 })], true), cursor: 12 };
@@ -118,14 +169,22 @@ test('HTTP 读取保留子地址和原生队列，固定窗口，两次只读请
     assert.equal(view.state.pendingInput[0].id, 'approval');
     assert.equal(view.calls[0].name, 'wait_agent');
     assert.equal(view.calls[0].returned, null);
-    await readExecution(client, target, { beforeSeq: 11, throughSeq: 12, maxMessages: 5 });
+    assert.equal(view.executionStatus, 'waiting');
+    assert.equal(view.waiting[0].name, 'wait_agent');
+    const historical = await readExecution(client, target, { beforeSeq: 11, throughSeq: 12, maxMessages: 5 });
+    assert.equal(historical.executionStatus, 'historical');
+    assert.deepEqual(historical.waiting, []);
     assert.equal(calls.at(-1).payload.args.request.beforeSeq, 11);
     assert.equal(calls.at(-1).payload.args.request.maxMessages, 5);
     await assert.rejects(readExecution(client, { ...target.address, parentSessionId: 'wrong' }), { code: 'subagent/unauthorized' });
     assert.equal(calls.length, 6);
+    running = false;
+    const idle = await readExecution(client, target);
+    assert.equal(idle.executionStatus, 'idle');
+    assert.deepEqual(idle.waiting, []);
     cursor = -1;
     const empty = await readExecution(client, target);
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 9);
     assert.deepEqual(empty.calls, []);
     assert.equal(empty.throughSeq, -1);
   } finally { await new Promise(resolve => server.close(resolve)); }

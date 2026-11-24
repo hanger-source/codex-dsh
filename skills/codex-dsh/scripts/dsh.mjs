@@ -114,7 +114,7 @@ async function main() {
       doctor: '只读检查 DSH 原生连接与桌面 Codex queue 能力', sessions: '列出主会话；--workspace 可筛选',
       start: '创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
       attach: '绑定已有主会话并开启 Team；必须 --session ID --workspace PATH',
-      status: '当前绑定、主控状态与直属子 Agent 名称／运行状态；未运行不等于任务完成',
+      status: '当前绑定与直属子 Agent 状态；单列正在等待及等待前上下文，未运行不等于任务完成',
       agents: '子 Agent 树（含嵌套）；--session ROOT 或当前绑定',
       state: '原生运行状态、队列及待人工输入；--session ID 或绑定主控，--agent PATH 可选',
       projections: '原生投影；--keys key1,key2 可选；可指定 --agent PATH',
@@ -217,17 +217,28 @@ async function main() {
     if (client.base !== binding.endpoint) throw new Error('当前 DSH 地址与绑定不符；请核对启动日志与目标会话。');
     const sessionId = binding.sessionId;
     if (command === 'status') {
-      const [state, projections, subagents] = await Promise.all([
-        readState(client, sessionId), readProjections(client, sessionId), listAgents(client, sessionId, { recursive: false }),
+      const [execution, projections, catalog] = await Promise.all([
+        readExecution(client, sessionId), readProjections(client, sessionId), listAgents(client, sessionId, { recursive: false }),
       ]);
+      const state = execution.state;
+      const subagents = await Promise.all(catalog.map(async item => {
+        if (item.running !== true) return { ...item, executionStatus: item.running === false ? 'idle' : 'unknown' };
+        const view = await readExecution(client, item);
+        return { ...item, running: view.state.running, executionStatus: view.executionStatus,
+          waiting: view.waiting, throughSeq: view.throughSeq, hasMore: view.hasMore };
+      }));
       const subagentSummary = {
         total: subagents.length,
         running: subagents.filter(item => item.running === true).length,
         idle: subagents.filter(item => item.running === false).length,
         unknown: subagents.filter(item => item.running === null).length,
-        meaning: '直属子 Agent 的只读快照；idle 不代表任务完成，unknown 表示目录中有记录但本次未取得会话状态。',
+        waiting: subagents.filter(item => item.executionStatus === 'waiting').length,
+        meaning: 'running 是原生运行标志，waiting 单列其中已观察到的等待；idle 不代表完成，未识别到 wait 不证明正在有效推进。',
       };
-      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput }, team: projections?.values?.agentTeam?.enabled, subagentSummary, subagents });
+      output({ ...binding, state: { cursor: state.cursor, active: state.active, running: state.running, queued: state.queue?.length ?? null, pendingInput: state.pendingInput },
+        executionStatus: execution.executionStatus, waiting: execution.waiting,
+        throughSeq: execution.throughSeq, hasMore: execution.hasMore,
+        team: projections?.values?.agentTeam?.enabled, subagentSummary, subagents });
     } else if (command === 'send') {
       const text = await inputText(options);
       const mode = options.mode || 'steer';

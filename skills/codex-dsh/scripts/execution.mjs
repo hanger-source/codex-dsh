@@ -13,6 +13,17 @@ function position(event) {
   return { seq: event.seq, time: event.time, type: event.type };
 }
 
+function waitKind(name, input) {
+  if (name === 'wait_agent') return 'agent-message';
+  if (name === 'job_output' && input?.wait === true) return 'job';
+  return null;
+}
+
+function argumentsOf(value) {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
 /**
  * Project one native history page. Input/result excerpts retain their event
  * locations; callers can read details or an earlier page without another scan.
@@ -25,6 +36,8 @@ export function summarizeExecution(page, { maxChars = 600 } = {}) {
   let turn = null;
   let lastMessage = null;
   let lastEvent = null;
+  let lastThought = null;
+  let lastStatement = null;
   const findCall = (id, turnId) => calls.findLast(call => call.callId === id
     && (turnId === undefined || call.turn === turnId));
 
@@ -32,6 +45,7 @@ export function summarizeExecution(page, { maxChars = 600 } = {}) {
     const data = event.data ?? {};
     if (['turn/start', 'turn/end'].includes(event.type)) {
       turn = { ...position(event), turn: data.turn, reason: data.reason };
+      if (event.type === 'turn/start') lastThought = lastStatement = null;
       if (event.type === 'turn/end') {
         for (const call of calls) {
           if (call.returned || call.closedBy) continue;
@@ -45,14 +59,29 @@ export function summarizeExecution(page, { maxChars = 600 } = {}) {
     if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
       const nested = event.type === 'tool/code-dispatch-start';
       const root = nested ? findCall(data.rootCallId) : null;
+      const kind = waitKind(data.name, argumentsOf(data.arguments));
+      const callTurn = nested ? root?.turn ?? (turn?.type === 'turn/start' ? turn.turn : undefined) : data.turn;
       calls.push({
         callId: nested ? data.subCallId : data.callId, name: data.name,
         ...(nested ? { rootCallId: data.rootCallId, parentCallId: data.parentCallId } : {}),
-        turn: nested ? root?.turn ?? (turn?.type === 'turn/start' ? turn.turn : undefined) : data.turn,
+        turn: callTurn,
         step: nested ? root?.step : data.step,
         started: position(event),
         input: excerpt(typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments) ?? '', maxChars),
         returned: null, closedBy: null,
+        ...(kind ? { wait: {
+          kind,
+          before: {
+            thought: lastThought,
+            statement: lastStatement,
+            // Snapshot before the wait: later returns must not rewrite this context.
+            calls: calls.filter(call => call.turn === callTurn && call.callId !== data.rootCallId
+              && !call.wait).slice(-2).map(call => ({
+              callId: call.callId, name: call.name, started: call.started,
+              input: call.input, returned: call.returned, closedBy: call.closedBy,
+            })),
+          },
+        } } : {}),
       });
     }
 
@@ -87,8 +116,16 @@ export function summarizeExecution(page, { maxChars = 600 } = {}) {
       const content = event.type === 'assistant/message' ? data.message?.content : data.content;
       const text = contentText(content);
       if (text) lastMessage = { ...position(event), text: excerpt(text, maxChars) };
+      if (event.type === 'assistant/message') {
+        // Only the committed thought visible in DSH's conversation UI; never streams.
+        // Keep a short excerpt at a wait, rather than exporting a reasoning history.
+        const thought = (content ?? []).filter(block => block.type === 'reasoning')
+          .map(block => block.text).join('\n');
+        lastThought = thought ? { ...position(event), text: excerpt(thought, Math.min(maxChars, 300)) } : null;
+        if (text) lastStatement = { ...position(event), text: excerpt(text, maxChars) };
+      }
     }
-    // Stream fragments/reasoning/usage are not useful execution summaries.
+    // Streaming fragments and usage are not execution evidence.
     if (/^(tool\/|turn\/|step\/|approval\/|llm\/retry|agent\/inbox\/)/u.test(event.type)
       || ['assistant/message', 'user/message'].includes(event.type)) lastEvent = position(event);
   }
@@ -97,6 +134,7 @@ export function summarizeExecution(page, { maxChars = 600 } = {}) {
     firstSeq: events[0]?.seq ?? null, lastSeq: events.at(-1)?.seq ?? null,
     nextBeforeSeq: events[0]?.seq ?? null,
     turn, calls, lastMessage, lastEvent,
+    waiting: calls.filter(call => call.wait && !call.returned && !call.closedBy),
   };
 }
 
@@ -113,5 +151,11 @@ export async function readExecution(client, target, { maxChars = 600, ...history
   const page = throughSeq === -1
     ? { cursor: -1, hasMore: false, records: [] }
     : await readActivity(client, target, { maxMessages: 3, ...historyOptions, throughSeq });
-  return { state, throughSeq, ...summarizeExecution(page, { maxChars }) };
+  const view = summarizeExecution(page, { maxChars });
+  const current = historyOptions.beforeSeq === undefined && throughSeq === state.cursor;
+  // A historical wait or an idle Session must never be shown as waiting now.
+  const waiting = current && state.running === true ? view.waiting : [];
+  const executionStatus = !current ? 'historical' : state.running === false ? 'idle'
+    : state.running === true ? (waiting.length ? 'waiting' : 'running') : 'unknown';
+  return { state, throughSeq, ...view, waiting, executionStatus };
 }

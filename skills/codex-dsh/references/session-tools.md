@@ -20,7 +20,7 @@ Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `impo
 | `readTasks(client, rootSessionId)` | 根会话的原生 agentTeam 投影，含任务状态、ownerId、blockedBy、writeScopes 和原生诊断。空任务板不代表没有子 Agent 工作，主控可能未使用任务板。 |
 | `readActivity(client, target, {beforeSeq?, throughSeq?, maxMessages?})` | 接普通 Session ID、原生地址或目录／resolveAgent 返回对象。子 Agent 必须保留直接父 ID、子 ID 与 mode 的原生 address，不能拆成裸子 ID；嵌套成员用直接父而不是总主控。返回有界历史 records、cursor、hasMore，maxMessages 限制消息数量，期间工具事件保留。不激活、不推进游标；下一页 beforeSeq 用本页最小 seq，throughSeq 可固定观察窗口。 |
 | `summarizeActivity(page)` | 只投影事件 seq／time／type，保留 hasMore、cursor、nextBeforeSeq。需要正文时读取原 page.records，不把元数据视图当完整内容。 |
-| `readExecution(client, target, {beforeSeq?, throughSeq?, maxMessages?, maxChars?})` | 一次 state 与一页历史读取，返回原生状态/队列/待输入，以及关联后的工具调用、返回、轮次与最近正文。默认 3 条消息、每段预览 600 字符；历史固定到 state.cursor，可显式读早期窗口。接同样的原生 target，不激活、不轮询、不自动翻页。 |
+| `readExecution(client, target, {beforeSeq?, throughSeq?, maxMessages?, maxChars?})` | 一次 state 与一页历史读取，返回原生状态/队列/待输入、工具执行和 `executionStatus`；`waiting` 单列当前等待及其前一步可见思考、说明和前两次执行/返回。默认 3 条消息、每段预览 600 字符（思考短摘最多 300 字符）；历史固定到 state.cursor。接同样的原生 target，不激活、不轮询、不自动翻页。 |
 | `summarizeExecution(page, {maxChars?})` | 已有历史页直接投影，无 I/O。按原生 callId/sourceEventSeqs 配对工具开始与返回，包含 run_code 的 rootCallId/parentCallId/subCallId 嵌套调用；不解析代码字符串猜内部运行。保留事件位置、时间、分页与截断信息。 |
 | `sendAgentMessage(client, {rootSessionId, target, text, delivery?, requestId?, clientTimeZone?})` | 在已核对的子树中，向 continuable 子 Agent 的原生 `subagents/prompt` 投递。默认 steer，queue 留待后续轮次；返回原生 messageId 与请求身份。不投根会话、不创建绑定、不改任务板、不自动通知主控、不重试。 |
 | `sendSessionMessage(client, {sessionId, text, delivery?, requestId?, clientTimeZone?})` | 向主控等普通会话投递。返回请求身份和原生 receipt，不依赖 CLI 或写绑定；子会话身份由原生所有权检查拒绝。 |
@@ -58,6 +58,8 @@ const { readExecution } = await import('/absolute/skill/scripts/sdk.mjs');
 const view = await readExecution(client, target);
 console.log(JSON.stringify({
   running: view.state.running,
+  executionStatus: view.executionStatus,
+  waiting: view.waiting,
   queue: view.state.queue,
   pendingInput: view.state.pendingInput,
   callsWithoutReturn: view.calls.filter(call => !call.returned && !call.closedBy),
@@ -68,6 +70,10 @@ console.log(JSON.stringify({
 ```
 
 `calls` 包含本页所有调用：`started` 是原生开始事件，`input` 是实参预览（等待时长、目标或 job ID 在工具原参数中）；`returned` 是对应返回的时间、错误标识及结果预览。`closedBy` 表示未见返回但已观察到所属轮结束或父调用返回，不能再当作正在等待。`lastMessage` 仅提取已提交文本，不包含推理、stream、usage。预览明确携带 `chars/truncated`；详情按事件 `seq` 回读，图片等只列类型，不把原件塞进文本。
+
+`executionStatus` 区分 `waiting/running/idle/unknown/historical`。已识别的等待是未返回、未随所属轮或父调用结束的 `wait_agent`，以及显式 `wait:true` 的 `job_output`；不解析 bash 或 run_code 字符串猜内部执行。`waiting[].wait.before` 带等待开始前同轮的 `thought`（已提交、DSH 界面可见的最近一步思考短摘）、`statement`（最近说明）和 `calls`（前两次非等待执行及当时结果）。不输出思考历史、流式片段或等待后消息，不从中自动推断依赖对象。窗口内没有对应内容时返回 null/空列表，沿已有 seq/分页按需补读。
+
+`status` 对主控及目录中标为运行的直属成员各取一页执行记录，单列 `waiting` 及上述前序上下文；原生 `running` 保留原义，汇总额外给出 `waiting` 数。历史窗口、原生 idle 会话和已返回的旧 wait 不标为当前等待。各读取不是同一事务快照；没有识别到 wait 也不代表正在有效推进。看到等待时，结合前序说明和执行结果判断是否需要检查对方已交付、已停下或已交接，不默认再次唤醒或轮询。
 
 `running:true` 可以是在等待；未见返回也不自动等于仍在执行。结合原生 state 与轮次/返回观察判断。`hasMore:true` 表示还有早期历史；若调用开始不在窗口，`started:null`，不补猜开始时间。原生未提供内部事件时只保留外层调用，不假造等待对象。state 与历史不是全系统同一事务快照；读历史页时返回的当前 state 也不能当作历史状态。
 
