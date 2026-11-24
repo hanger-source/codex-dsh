@@ -5,6 +5,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { readDshLaunch } from './environment.mjs';
 export * from './session.mjs';
+export * from './execution.mjs';
 export * from './codex.mjs';
 export * from './tool-task.mjs';
 

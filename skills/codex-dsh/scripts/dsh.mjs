@@ -10,6 +10,7 @@ import { decodeText } from './environment.mjs';
 import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
 import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
 import { delegateTask, sendTaskMessage, readTaskTicket, readTaskResult, reportTaskResult } from './sdk.mjs';
+import { readExecution } from './sdk.mjs';
 
 const home = os.homedir();
 const output = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
@@ -91,6 +92,12 @@ async function atomicCommand(client, command, options) {
   const target = await resolveAgent(client, rootSessionId, options.agent);
   if (command === 'state') return readState(client, target);
   if (command === 'projections') return readProjections(client, target, options.keys?.split(','));
+  if (command === 'execution') return readExecution(client, target, {
+    beforeSeq: options.before === undefined ? undefined : Number(options.before),
+    throughSeq: options.through === undefined ? undefined : Number(options.through),
+    maxMessages: numberOption(options['max-messages'], 3, 1000),
+    maxChars: numberOption(options['max-chars'], 600, 500000),
+  });
   if (options.detail !== undefined && !['summary', 'full'].includes(options.detail)) throw new Error('detail 只能是 summary 或 full。');
   const page = await readActivity(client, target, {
     beforeSeq: options.before === undefined ? undefined : Number(options.before),
@@ -113,6 +120,7 @@ async function main() {
       projections: '原生投影；--keys key1,key2 可选；可指定 --agent PATH',
       tasks: '主控原生任务板，含负责人、依赖、写入范围；可在 JSON 中按 ownerId 筛选',
       activity: '有界历史事件；--before SEQ --through SEQ --max-messages N；默认元数据，--detail full 读完整页',
+      execution: '原生状态与工具执行证据（含 run_code 内部调用）；--agent PATH --max-messages N --max-chars N，保留分页与详情位置',
       'send-agent': '向子 Agent 投递；--agent PATH或ID --file/--text；--session ROOT 或绑定主控，--mode steer/queue',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
@@ -125,7 +133,7 @@ async function main() {
     }, connection: '官方 Desktop 接入插件自动提供入口；Web 使用 --log 或 --url-file；--codex 桌面配套 CLI 绝对路径（Windows 为 codex.exe）。需要 Node.js 22.22.3 或 24+，不依赖 DSH 安装目录。', binding: '--thread 默认为 CODEX_THREAD_ID；report 必须显式指定。本机绑定不保存凭据' });
     return;
   }
-  const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'send-agent'];
+  const atomicCommands = ['agents', 'state', 'projections', 'tasks', 'activity', 'execution', 'send-agent'];
   if (!['doctor', 'sessions', 'start', 'attach', 'status', 'send', 'report', 'wait', 'read', 'task', 'task-send', 'task-read', 'task-report', ...atomicCommands].includes(command)) throw new Error('未知命令；运行 help 查看。');
   if (command === 'task-report') {
     if (!options.ticket) throw new Error('task-report 需要 --ticket，不从主控绑定或环境猜回传对象。');

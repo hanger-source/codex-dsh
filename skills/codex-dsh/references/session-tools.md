@@ -20,6 +20,8 @@ Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `impo
 | `readTasks(client, rootSessionId)` | 根会话的原生 agentTeam 投影，含任务状态、ownerId、blockedBy、writeScopes 和原生诊断。空任务板不代表没有子 Agent 工作，主控可能未使用任务板。 |
 | `readActivity(client, target, {beforeSeq?, throughSeq?, maxMessages?})` | 接普通 Session ID、原生地址或目录／resolveAgent 返回对象。子 Agent 必须保留直接父 ID、子 ID 与 mode 的原生 address，不能拆成裸子 ID；嵌套成员用直接父而不是总主控。返回有界历史 records、cursor、hasMore，maxMessages 限制消息数量，期间工具事件保留。不激活、不推进游标；下一页 beforeSeq 用本页最小 seq，throughSeq 可固定观察窗口。 |
 | `summarizeActivity(page)` | 只投影事件 seq／time／type，保留 hasMore、cursor、nextBeforeSeq。需要正文时读取原 page.records，不把元数据视图当完整内容。 |
+| `readExecution(client, target, {beforeSeq?, throughSeq?, maxMessages?, maxChars?})` | 一次 state 与一页历史读取，返回原生状态/队列/待输入，以及关联后的工具调用、返回、轮次与最近正文。默认 3 条消息、每段预览 600 字符；历史固定到 state.cursor，可显式读早期窗口。接同样的原生 target，不激活、不轮询、不自动翻页。 |
+| `summarizeExecution(page, {maxChars?})` | 已有历史页直接投影，无 I/O。按原生 callId/sourceEventSeqs 配对工具开始与返回，包含 run_code 的 rootCallId/parentCallId/subCallId 嵌套调用；不解析代码字符串猜内部运行。保留事件位置、时间、分页与截断信息。 |
 | `sendAgentMessage(client, {rootSessionId, target, text, delivery?, requestId?, clientTimeZone?})` | 在已核对的子树中，向 continuable 子 Agent 的原生 `subagents/prompt` 投递。默认 steer，queue 留待后续轮次；返回原生 messageId 与请求身份。不投根会话、不创建绑定、不改任务板、不自动通知主控、不重试。 |
 | `sendSessionMessage(client, {sessionId, text, delivery?, requestId?, clientTimeZone?})` | 向主控等普通会话投递。返回请求身份和原生 receipt，不依赖 CLI 或写绑定；子会话身份由原生所有权检查拒绝。 |
 | `queueCodexMessage({executable?, thread, text, workspace?})` | 显式调用桌面配套 Codex queue，将文本投递指定真实 UUID；不依赖 DSH 连接。返回 queueAccepted，不代表处理完成；不自动重试。 |
@@ -48,6 +50,30 @@ try {
 ```
 
 读取子 Agent 活动时，直接传上面取得的 `target`：`await readActivity(client, target, {maxMessages: 3})`；也可传 `target.address`。已知名称时先 `resolveAgent(client, rootSessionId, 'reader/audit')`，再将整个结果传入读取函数，不要只保留 sessionId。原生历史接口会校验直接父关系与模式，裸子 ID 会被拒绝；SDK 不靠失败后重试其它地址绕过检查。CLI 的 `activity --session ROOT --agent NAME` 沿同一解析结果读取，状态和投影查询仍遵守各自的原生合同。
+
+要看它实际在做什么，使用 `readExecution`；已有历史则直接 `summarizeExecution(page)`。例如在同一连接里选择目标：
+
+```js
+const { readExecution } = await import('/absolute/skill/scripts/sdk.mjs');
+const view = await readExecution(client, target);
+console.log(JSON.stringify({
+  running: view.state.running,
+  queue: view.state.queue,
+  pendingInput: view.state.pendingInput,
+  callsWithoutReturn: view.calls.filter(call => !call.returned && !call.closedBy),
+  lastCall: view.calls.at(-1),
+  lastMessage: view.lastMessage,
+  throughSeq: view.throughSeq, hasMore: view.hasMore, nextBeforeSeq: view.nextBeforeSeq,
+}));
+```
+
+`calls` 包含本页所有调用：`started` 是原生开始事件，`input` 是实参预览（等待时长、目标或 job ID 在工具原参数中）；`returned` 是对应返回的时间、错误标识及结果预览。`closedBy` 表示未见返回但已观察到所属轮结束或父调用返回，不能再当作正在等待。`lastMessage` 仅提取已提交文本，不包含推理、stream、usage。预览明确携带 `chars/truncated`；详情按事件 `seq` 回读，图片等只列类型，不把原件塞进文本。
+
+`running:true` 可以是在等待；未见返回也不自动等于仍在执行。结合原生 state 与轮次/返回观察判断。`hasMore:true` 表示还有早期历史；若调用开始不在窗口，`started:null`，不补猜开始时间。原生未提供内部事件时只保留外层调用，不假造等待对象。state 与历史不是全系统同一事务快照；读历史页时返回的当前 state 也不能当作历史状态。
+
+可复用 `listAgents` 的结果，用普通 JavaScript 为选中的成员组合 `readExecution`，在程序内筛选后输出。SDK 不强制每次读全树，不判定谁卡死，也不自动发提醒。
+
+CLI 的薄入口：`node "$D" execution --session ROOT_ID --agent reader/audit --max-messages 3 --max-chars 600`；同样支持 `--before/--through`。这些参数控制观察窗口和预览，不能将省略内容当作不存在。
 
 历史正文也先在程序内提取。`assistant/message` 的 `event.data` 同时可能含已提交 message、stream、usage；直接输出整条 event 会把流式片段与完整正文一起送进上下文。下面用已经选定的 sessionId 和 selectedSeqs 读取提交文字：
 
