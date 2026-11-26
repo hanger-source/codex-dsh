@@ -1,10 +1,19 @@
 # Codex × DSH
 
-让 Codex 把高推理能力用在方向、架构与关键判断上，让 DeepSeek Harness（DSH）主会话组织 Agent Team 完成调查、实现、调试与验证。用户主要与 Codex 讨论，两边通过固定会话异步交流。
+组合 Codex 的高智能判断与编码、DeepSeek Harness（DSH）的低成本并行执行。按任务选择 DSH 主导实施，或由 Codex 直接收束关键生产代码、DSH 团队调试验收。用户主要与 Codex 讨论，两边通过固定会话异步交流。
 
 也可把限定调查、检索整理和多步操作交给独立普通 DSH 会话作为工具：`task` 派发、`task-send` 补充、`task-read` 读取、`task --reuse` 接续，DSH 用 `task-report` 回传。SDK 后续操作直接接派发返回的对象，无需再提取 ID 或拼协作消息。按范围复用，不占项目主控绑定、不默认开 Team。机制、SDK 与示例单独见 [DSH Agent as tool](skills/codex-dsh/references/agent-as-tool.md)。
 
-Codex 会亲自查看目录、层次、类型、接口和函数分布，并按需要深入关键链路；DSH 有自己的判断权，不把每一步实现都变成请示。目标是减少高成本模型处理原始资料、重复调查和等待的消耗，并不保证某个固定的 token 节省比例。
+## 选择协作场景
+
+| 场景 | 主要分工 |
+| --- | --- |
+| [DSH 主导实施](skills/codex-dsh/references/dsh-led-implementation.md) | 适合范围较大、可拆分的实现。DSH 自主设计、编码、整合与验证，Codex 把握目标、关键决策与质量。 |
+| [Codex 主导收敛](skills/codex-dsh/references/codex-led-convergence.md) | 适合跨模块合同、成熟能力承接和生产链路贯通。Codex 直接承担核心代码，DSH 负责材料、调试、验收和具体反馈。 |
+
+场景可按工作范围并存或切换，不以项目日期、固定模型或人数划分。连接、绑定、SDK、观察和异步回传独立放在[协作基础](skills/codex-dsh/references/collaboration-basics.md)，不暗含主要实现者。独立工具会话可供两种场景使用，不改变项目主控绑定。
+
+Codex 保持整体判断并亲自核对关键实现和原件，DSH 在所选责任内主动推进。目标是减少原始资料处理、重复调查与返工，并不保证固定的 token 节省比例。
 
 ## 安装
 
@@ -18,9 +27,13 @@ Skill 安装到用户级 `~/.agents/skills/codex-dsh/`。仓库无需单独发�
 
 ## 使用
 
-在要承担指导工作的 Codex 会话里说：
+按当前工作在 Codex 会话里选择：
 
-> 用 $codex-dsh 在当前工作区开启省 token 协作。先看整体结构，再让 DSH 主控组织执行。
+> 用 $codex-dsh 在当前工作区采用 DSH 主导实施，按完整责任并行开发，由 Codex 把握关键取舍。
+
+或者：
+
+> 用 $codex-dsh 收束当前生产链路，由 Codex 写齐核心代码，DSH 团队用匹配构件调试、验收并反馈具体问题。
 
 也可以接入已有 DSH 主会话：
 
@@ -28,7 +41,7 @@ Skill 安装到用户级 `~/.agents/skills/codex-dsh/`。仓库无需单独发�
 
 Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真实工作目录、建立绑定，并将回传命令交给 DSH。已有主会话不因接入而重建或清空。用户也可以指定另一个工作区创建 DSH 主会话。
 
-如果希望采用 Astra Ultra，请在 Codex 会话中选择对应模型与推理档位；Skill 不会自动切换模型，也不会声称改变了配置。
+模型与推理档位按用户选择和任务需要配置；Skill 不自动切换模型，不固定开发者数量，也不声称改变了未修改的配置。
 
 ## 通信如何工作
 
@@ -43,7 +56,7 @@ Codex 自行识别当前线程 UUID、查找指定 DSH 主会话、核对其真�
 
 - Codex 派活后可以结束当前轮次，不需要挂着等待。
 - Codex 发给 DSH 的指导默认插话发送，DSH 在下一步读取，不必等整轮结束；明确要留到下一轮的任务可用 `send --mode queue`。
-- DSH 在约定的整批交付完成、确需 Codex 判断的阻塞或关键反证出现时主动汇报；普通修复、测试计数、接收和等待不逐条唤醒。
+- DSH 在可采用的阶段成果、关键卡点解除、进入下一阶段或出现阻塞与关键反证时主动同步；普通修复、测试计数、接收和等待合并处理，不逐条唤醒，也不长期沉默。
 - DSH 的汇报进入原 Codex 会话队列，由原会话继续处理。正在执行时不强行打断；队列接受不等于模型已处理。
 - Codex 的反馈进入原 DSH 会话，双方保留各自上下文。普通回执不触发反复互发消息。
 
@@ -114,7 +127,7 @@ node "$P" changes /absolute/project --since main
 
 ```text
 skills/codex-dsh/
-├── SKILL.md                    # 使用与协作规则
+├── SKILL.md                    # 场景选择与共用边界
 ├── agents/openai.yaml          # Codex Skill 元数据
 ├── scripts/
 │   ├── sdk.mjs                 # 公开 SDK 入口、连接、绑定读取与 Codex 投递
@@ -127,8 +140,11 @@ skills/codex-dsh/
 │   └── typescript-outline.mjs  # TypeScript 原生语法提取
 ├── assets/desktop-plugin/      # 官方 Desktop 原生 Token 接入插件
 └── references/
-    ├── agent-as-tool.md        # 工具任务机制与独立用法
-    ├── dsh-brief.md            # 交给 DSH 主控的协作约定
+    ├── collaboration-basics.md # 共用连接、交付、观察和成本边界
+    ├── dsh-led-implementation.md # DSH 主导设计、编码与整合
+    ├── codex-led-convergence.md # Codex 核心编码，DSH 调试验收
+    ├── unattended-control.md  # 按当前场景进行周期介入
+    ├── agent-as-tool.md        # 两种场景共用的独立工具任务
     ├── native-link.md          # 接口、状态及诊断说明
     ├── session-tools.md        # Session SDK 组合示例
     └── project-tools.md        # 工程观察组合示例

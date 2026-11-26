@@ -101,7 +101,7 @@ execFile(binding.codexExecutable, ['queue', '--thread', binding.codexThreadId, '
 
 脚本使用参数数组调用 CLI，消息不经 shell 求值。返回 `queueAccepted` 只表示命令接受投递，不代表 Codex 已决策；超时或不确定错误不能盲目重发。此命令未提供本 Skill 可用的 requestId 去重参数，因此不额外声称恰好一次投递。DSH 需要反馈时由 Codex `send` 回同一原生 Session，普通汇报无需逐条确认。
 
-保持持有线程的桌面 App 可用。已验证的行为是：Codex 一轮结束后，DSH 投递进入同一个线程并触发下一轮；没有另启 Agent 执行器。`queue` 沿用目标线程模型与设置，不能借它切换成 Astra Ultra。已关闭 App、远程主机、云端线程的消费行为未在本机验证，不据此承诺离线唤醒。
+保持持有线程的桌面 App 可用。已验证的行为是：Codex 一轮结束后，DSH 投递进入同一个线程并触发下一轮；没有另启 Agent 执行器。`queue` 沿用目标线程模型与设置，不能借它切换模型或推理档位。已关闭 App、远程主机、云端线程的消费行为未在本机验证，不据此承诺离线唤醒。
 
 PATH 中的 Codex CLI 可能与桌面配套版本不同。`doctor` 与 `start/attach` 检查实际选用的二进制；其他安装位置通过 `--codex` 或 `CODEX_DSH_CODEX` 明确指定，创建时固化到绑定。CLI 或应用升级后，先核对 `queue --help` 和实际投递行为，不用另开 `exec resume`、改写会话数据库或绕过内部 App Tools 进程校验替代。
 
