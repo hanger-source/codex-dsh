@@ -5,7 +5,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { inspectCodex, queueCodexMessage } from './codex.mjs';
-import { listSessions, readState, readActivity, sendSessionMessage } from './session.mjs';
+import { createSessionInWorkspace, listSessions, readState, readActivity, sendSessionMessage } from './session.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const defaultStateDir = () => process.env.CODEX_DSH_STATE_DIR || path.join(os.homedir(), '.local/state/codex-dsh');
@@ -61,7 +61,7 @@ export async function delegateTask(client, { task, workspace, title, thread = pr
   let sessionId = previous?.sessionId;
   let ticketPath;
   try {
-    if (!sessionId) sessionId = (await client.rpc('session/create', { request: { cwd } })).sessionId;
+    if (!sessionId) sessionId = (await createSessionInWorkspace(client, cwd)).sessionId;
     const state = await inspectToolSession(client, sessionId, cwd);
     const ticket = { kind: 'codex-dsh-tool-task', sessionId, requestId, workspace: cwd, endpoint: client.base,
       codexThreadId: thread, codexExecutable: executable, afterSeq: state.cursor };

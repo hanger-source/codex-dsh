@@ -49,7 +49,7 @@ try {
 } finally { await client.close(); }
 ```
 
-`delegateTask` 创建普通 Session、核对工作区与空闲状态、保存准确回传地址，再通过原生 `session/prompt` 投递一次。消息已带本任务的 `task-report` 命令，不必手工抄接收线程 ID，也不依赖 DSH 环境中的 `CODEX_THREAD_ID`。完成或遇到需要判断的阻塞时，DSH 调用该命令，将报告通过原生 `codex queue` 送回发起线程。
+`delegateTask` 按实际工作目录创建或复用原生项目，在项目下创建普通 Session、核对工作区与空闲状态、保存准确回传地址，再通过原生 `session/prompt` 投递一次。消息已带本任务的 `task-report` 命令，不必手工抄接收线程 ID，也不依赖 DSH 环境中的 `CODEX_THREAD_ID`。完成或遇到需要判断的阻塞时，DSH 调用该命令，将报告通过原生 `codex queue` 送回发起线程。
 
 派发结果 `task` 是现有票据的引用，可直接交给后续函数；跨轮时用其 `ticketPath` 恢复，无需把对象全文或任务正文再传一遍。`sendTaskMessage` 将补充送进同一个原生 Session，沿用本次任务的回传地址；`delegateTask({reuse: task, ...})` 则在空闲会话里受理下一次工作并返回新请求。运行中纠正与交付后接续有不同含义，不能因原会话忙就另建同题任务。
 

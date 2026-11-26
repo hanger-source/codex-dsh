@@ -12,6 +12,7 @@ Windows 导入绝对路径要先 `pathToFileURL(file).href`，不要直接 `impo
 | --- | --- |
 | `connectDsh({logPath?, urlFile?, expectedEndpoint?})` | 建立本机连接，返回 client；可核对已有绑定 endpoint。使用 Node 内置 WebSocket，无需指定 DSH 安装目录。调用方在 finally 中 close，不重启服务，不创建 Agent。 |
 | `readBinding({thread?, stateDir?})` | 只读当前或明确指定的 Codex 绑定。省略 thread 时使用 CODEX_THREAD_ID；没有绑定就报错，不猜其它会话。 |
+| `createSessionInWorkspace(client, workspace)` | 将工作目录解析为真实路径，经原生 `workspace/create` 创建或复用项目，再以 `workspaceId` 创建普通会话；返回 `sessionId/workspaceId`，不发消息、不开 Team。项目失败直接停止。 |
 | `listSessions(client)` | 原生会话列表，含父子关系及投影；数据可能较大，先在代码或管道中选材再交模型。 |
 | `listAgents(client, rootSessionId, {recursive?, sessions?})` | 子树目录及运行快照。默认递归，返回路径、父 ID、名称、标签、模式、原生 `address`、运行状态、更新时间及 `catalogAvailable`。可复用已经取得的 sessions；目录记录缺少会话状态时 `running:null`，子目录不可读时保留该行并以 `catalogAvailable:false` 表达，不能据此断言没有后代。 |
 | `resolveAgent(client, rootSessionId, target)` | 在指定子树中按完整路径或 ID 找成员，返回可直接用于读取的对象及原生 `address`。省略 target 或指定根 ID 时返回根；歧义、归属冲突或不在树内会拒绝。 |

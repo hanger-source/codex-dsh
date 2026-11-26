@@ -81,7 +81,8 @@ Codex 侧默认绑定当前 `CODEX_THREAD_ID`，创建绑定必须是实际 UUID
 
 ## 请求与结果边界
 
-- 原生方法：`session/list`、`create`、`rename`、`projections`、`state`、`prompt`、`wait`，以及 `agentTeams/setEnabled`。
+- 新建会话先以真实目录调用 `workspace/create({request:{path}})`，取得创建或复用的 `workspace.workspaceId`，再调用 `session/create({request:{workspaceId}})`。`cwd` 只指定执行目录，不建立项目归属；两字段不能同时传入。`createSessionInWorkspace` 为 `start` 和独立 `task` 共用此链路，项目失败时直接停止。
+- 其它原生方法：`session/list`、`rename`、`projections`、`state`、`prompt`、`wait`，以及 `agentTeams/setEnabled`。
 - `session/list` 当前返回全部摘要；`_request` 是该方法实际声明的参数名。其它 Session 方法使用 `request`。不根据相近名称自动尝试不同协议。
 - `status` 组合主控状态、投影与直属子会话，不推进读取游标。子树、状态、任务板、历史与子 Agent 投递可从 SDK 独立使用，见 [协作 SDK](session-tools.md)。idle 仅表示当前未运行，不证明任务完成；不同查询的快照时间可能不同。
 - `send` 默认使用 `mode: steer`，对应 DSH 的插话发送：输入进入 `next-step`，不必等整轮结束。明确留待下一轮才用 `send --mode queue`，输入进入 `next-turn`。插话不等于取消；要求停工时应使用原生 `session/cancel` 并核对作用范围，本脚本未暴露取消命令。

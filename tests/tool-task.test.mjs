@@ -20,8 +20,10 @@ const thread = '12345678-1234-1234-1234-123456789012';
 async function gateway(run) {
   const calls = [];
   const sessions = [];
+  const workspaces = [];
   const state = { cursor: 10, active: true, running: false, queue: [], pendingInput: [] };
   let rejectPrompt = false;
+  let rejectWorkspace = false;
   const server = createServer(async (req, res) => {
     let raw = '';
     for await (const chunk of req) raw += chunk;
@@ -29,9 +31,19 @@ async function gateway(run) {
     calls.push(body);
     const request = body.payload.args.request;
     let value;
-    if (body.method === 'session/create') {
+    if (body.method === 'workspace/create') {
+      let workspace = workspaces.find(item => item.path === request.path);
+      const created = workspace === undefined;
+      if (created && !rejectWorkspace) {
+        workspace = { workspaceId: `workspace-${workspaces.length + 1}`, path: request.path, sessionIds: [] };
+        workspaces.push(workspace);
+      }
+      value = { workspace, created };
+    } else if (body.method === 'session/create') {
+      const workspace = workspaces.find(item => item.workspaceId === request.workspaceId);
       const sessionId = `session-${sessions.length + 1}`;
-      sessions.push({ sessionId, cwd: request.cwd, projections: { values: { agentTeam: { enabled: false } } } });
+      sessions.push({ sessionId, cwd: workspace?.path ?? request.cwd, projections: { values: { agentTeam: { enabled: false } } } });
+      workspace?.sessionIds.push(sessionId);
       value = { sessionId };
     } else if (body.method === 'session/list') value = { items: sessions };
     else if (body.method === 'session/state') value = state;
@@ -44,7 +56,9 @@ async function gateway(run) {
         : [event(18, 'assistant/message', { message: { content: [{ type: 'text', text: '有待核实的结果与证据' }] }, stream: 'DO_NOT_LOAD', usage: 'DO_NOT_LOAD' }),
           event(17, 'tool/result', { secret: 'DO_NOT_LOAD' }), event(15, 'user/message', { content: [{ type: 'text', text: '限定任务' }] })] };
     }
-    const result = body.method === 'session/prompt' && rejectPrompt
+    const result = body.method === 'workspace/create' && rejectWorkspace
+      ? { ok: false, error: { code: 'workspace/invalid-path', message: 'directory unavailable' } }
+      : body.method === 'session/prompt' && rejectPrompt
       ? { ok: false, error: { code: 'session/delivery-unavailable', message: 'unconfirmed' } }
       : value !== undefined ? { ok: true, value } : { ok: false, error: { code: 'unexpected', message: body.method } };
     res.setHeader('Content-Type', 'application/json');
@@ -56,9 +70,32 @@ async function gateway(run) {
   client.cookie = '';
   const stateDir = await fs.mkdtemp(path.join(root, 'state '));
   const options = { thread, workspace: root, codex: process.execPath, stateDir, task: '只读核对公开接口并提供证据', title: '接口核对' };
-  try { await run({ client, calls, sessions, state, options, reject: () => { rejectPrompt = true; } }); }
+  try { await run({ client, calls, sessions, workspaces, state, options, reject: () => { rejectPrompt = true; }, rejectWorkspace: () => { rejectWorkspace = true; } }); }
   finally { await new Promise(resolve => server.close(resolve)); }
 }
+
+test('new tool Sessions join one native project per real directory, while reuse retains the original Session', async () => {
+  await gateway(async ({ client, calls, workspaces, options }) => {
+    const first = await delegateTask(client, options);
+    const second = await delegateTask(client, { ...options, workspace: path.join(root, '.'), title: '另一项调查' });
+    assert.equal(workspaces.length, 1);
+    assert.equal(workspaces[0].path, await fs.realpath(root));
+    assert.deepEqual(workspaces[0].sessionIds, [first.sessionId, second.sessionId]);
+    const reused = await delegateTask(client, { ...options, reuse: first, task: '接续已有调查' });
+    assert.equal(reused.sessionId, first.sessionId);
+    assert.equal(calls.filter(call => call.method === 'workspace/create').length, 2);
+    assert.equal(calls.filter(call => call.method === 'session/create').length, 2);
+  });
+});
+
+test('project creation refusal stops dispatch without an ungrouped Session or a retry', async () => {
+  await gateway(async ({ client, calls, sessions, options, rejectWorkspace }) => {
+    rejectWorkspace();
+    await assert.rejects(delegateTask(client, options), /workspace\/invalid-path/);
+    assert.equal(sessions.length, 0);
+    assert.deepEqual(calls.map(call => call.method), ['workspace/create']);
+  });
+});
 
 test('independent work dispatch and reuse preserve project binding and native request identity', async () => {
   await gateway(async ({ client, calls, sessions, options }) => {

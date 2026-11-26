@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { decodeText } from './environment.mjs';
-import { listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
+import { createSessionInWorkspace, listSessions, readState, readProjections, listAgents, resolveAgent, readTasks, readActivity, summarizeActivity, sendAgentMessage } from './sdk.mjs';
 import { DshClient, bindingFilePath, readBinding, inspectCodex, queueCodexMessage, sendSessionMessage } from './sdk.mjs';
 import { delegateTask, sendTaskMessage, readTaskTicket, readTaskResult, reportTaskResult } from './sdk.mjs';
 import { readExecution } from './sdk.mjs';
@@ -112,7 +112,7 @@ async function main() {
   if (!command || command === 'help') {
     output({ commands: {
       doctor: '只读检查 DSH 原生连接与桌面 Codex queue 能力', sessions: '列出主会话；--workspace 可筛选',
-      start: '创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
+      start: '按工作目录创建或复用项目，在项目下创建并绑定主会话、开启 Team；--workspace 默认当前目录，--title 可选',
       attach: '绑定已有主会话并开启 Team；必须 --session ID --workspace PATH',
       status: '当前绑定与直属子 Agent 状态；单列正在等待及等待前上下文，未运行不等于任务完成',
       agents: '子 Agent 树（含嵌套）；--session ROOT 或当前绑定',
@@ -124,7 +124,7 @@ async function main() {
       'send-agent': '向子 Agent 投递；--agent PATH或ID --file/--text；--session ROOT 或绑定主控，--mode steer/queue',
       send: '--file PATH 或 --text TEXT；默认 steer 插话，下一步读取；明确等下一轮时用 --mode queue',
       report: 'DSH 主动投递给绑定 Codex；必须显式 --thread 绑定ID --session DSH主会话ID，并指定 --file 或 --text',
-      task: '独立工具任务：--file/--text，--workspace/--title 可选；--reuse TICKET 复用空闲工具会话；不绑定主控或开 Team',
+      task: '独立工具任务：按工作目录创建或复用项目；--file/--text，--workspace/--title 可选；--reuse TICKET 复用空闲工具会话；不绑定主控或开 Team',
       'task-send': '补充原工具任务：--ticket PATH --file/--text，默认 steer；不新建任务或票据',
       'task-read': '只读工具任务正文与状态：--ticket PATH；--before/--through/--max-messages/--max-chars，不等待、不推进游标',
       'task-report': '工具会话交付或求助：--ticket PATH --file/--text；回传原 Codex，不使用主控绑定',
@@ -200,7 +200,7 @@ async function main() {
       if (command === 'attach') await requireRoot(client, sessionId, workspace);
       else {
         if (options.session) throw new Error('接入已有会话请使用 attach。');
-        sessionId = (await client.rpc('session/create', { request: { cwd: workspace } })).sessionId;
+        sessionId = (await createSessionInWorkspace(client, workspace)).sessionId;
       }
       const state = await client.rpc('session/state', { request: { sessionId } });
       const binding = { codexThreadId, codexExecutable: codex.executable, sessionId, workspace, endpoint: client.base, afterSeq: state.cursor, createdAt: new Date().toISOString() };

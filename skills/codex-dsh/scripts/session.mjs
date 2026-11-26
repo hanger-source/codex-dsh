@@ -1,5 +1,16 @@
 // Composable native queries and delivery. The caller owns connection and selection.
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
+
+/** Register or reuse the directory's native Workspace before creating its Session. */
+export async function createSessionInWorkspace(client, workspace) {
+  const directory = await fs.realpath(workspace);
+  const result = await client.rpc('workspace/create', { request: { path: directory } });
+  const workspaceId = result.workspace?.workspaceId;
+  if (typeof workspaceId !== 'string' || !workspaceId.trim()) throw new Error('DSH 未返回有效 Workspace ID；未创建会话。');
+  const session = await client.rpc('session/create', { request: { workspaceId } });
+  return { ...session, workspaceId };
+}
 
 export async function listSessions(client) {
   return (await client.rpc('session/list', { _request: {} })).items;
